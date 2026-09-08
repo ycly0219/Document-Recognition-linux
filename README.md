@@ -33,6 +33,7 @@
 - 预览表格支持在选中行下方插入空白行；支持选中一行或多行后整行复制/粘贴，并可通过按钮或 `Ctrl/Cmd+C / Ctrl/Cmd+V` 操作
 - 预览表格的整行复制/粘贴仅作用于当前文件页签，切换页签后复制内容清空，避免跨文件数据混入
 - 批量选择 `png`、`jpg`、`jpeg`、`pdf` 文件，单次最多 5 个文件
+- 支持将 `png`、`jpg`、`jpeg`、`pdf` 文件拖入预览表格区域直接开始识别，拖放整批校验扩展名与 5 个文件上限
 - 上传文件到内部文件服务，提交异步 OCR 任务并轮询结果
 - 选择模板规则后立即预渲染空白单据页；不选文件可手工填写并导出，选文件开始 OCR 后空白页由文件页签整批替换；手工空白页导出文件名优先使用单据编号，缺失时回退“空白单据”
 - OCR 结果每 5 秒轮询一次；单个文件 OCR 最多轮询等待 5 分钟；5 分钟无结果时保留 `结果未生成` 页签与原任务 `reqUuid`，不判定为最终失败
@@ -79,17 +80,20 @@
 - Tkinter（Windows/macOS 随 Python 提供；麒麟需额外安装 `python3-tk`）
 - `requests`
 - `openpyxl`
+- `tkinterdnd2`
 - 能访问内部 OCR、文件服务和飞书 API 的网络环境
 - 打包支持银河麒麟 V10 桌面版 aarch64（华为鲲鹏/飞腾）
 
 ## 安装与运行
 
 ```bash
-python3 -m pip install requests openpyxl
+python3 -m pip install requests openpyxl tkinterdnd2
 python3 "tool.py"
 ```
 
 ## 打包
+
+macOS 不新增打包脚本，安装依赖后直接源码运行；`tkinterdnd2` 随源码加载 TkDND，拖放导入可直接使用。
 
 ### Windows
 
@@ -105,6 +109,7 @@ py -3 -m PyInstaller --clean --noconfirm ge_tool.spec
 也可以直接运行 `build_windows.bat`。构建产物位于 `dist\GE单据OCR处理工具\GE单据OCR处理工具.exe`。
 
 本项目使用 onedir 打包，`dist\GE单据OCR处理工具` 整个目录都属于运行产物；分发时必须整体复制，不能只移动 exe。
+打包会随程序携带 `tkinterdnd2` 的 TkDND 二进制，拖放导入可直接使用。
 
 ### 麒麟 ARM64
 
@@ -125,14 +130,15 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 ```
 
 安装系统软件包需要 root 或 sudo 权限，脚本会在需要时调用 `sudo` 并提示输入密码；如果既不是 root 又没有 `sudo`，脚本会明确报错退出，不会静默失败。构建产物为 `dist/GE单据OCR处理工具/GE单据OCR处理工具`。整个 `dist/GE单据OCR处理工具` 目录都属于运行产物，分发时必须整体复制；启动时直接运行该可执行文件。
+打包会随程序携带 `tkinterdnd2` 的 TkDND 二进制，拖放导入可直接使用。
 
 ## 使用步骤
 
 选择单据模板后会自动预渲染一张空白单据页；不选择文件时可直接填写并导出，选择文件时继续按下述流程。
 
 1. 选择单据模板。
-2. 点击“选择文件并开始处理”。
-3. 多选需要处理的图片或 PDF，单次最多 5 个文件；超过 5 个会提示重新选择。
+2. 点击“选择文件并开始处理”，或将文件拖入预览表格区域。
+3. 点击选择时多选需要处理的图片或 PDF；拖入时支持 `png`、`jpg`、`jpeg`、`pdf`。两种方式单次最多 5 个文件，超过 5 个或拖入不支持的类型会提示，且不改变当前预览。
 4. 等待处理完成，界面日志会展示上传、OCR 提交、轮询和解析进度。若单个文件 5 分钟无结果，页签会显示 `结果未生成`；可点击底部「继续查询原任务」继续等待，也可以直接人工填写该页签并导出。
 5. 处理完成后，界面按文件显示预览页签，页签顶部展示该文件的一组单据头，下方展示明细；单据头以多列表单展示、可直接编辑，明细单元格可双击修改，或用「新增行 / 插入行 / 删除行」调整明细；选中整行后可用「复制行 / 粘贴行」或 `Ctrl/Cmd+C / Ctrl/Cmd+V` 复制为新行。
 6. 核对无误后点击「确认并导出」，每次会先弹出目录选择框；选择后本批次生成 Excel 写入所选目录，取消选择则不导出。首次或没有历史记录时默认打开 exe 同目录（源码运行时为当前工作目录），后续默认打开上次选择的目录。飞书统计已在解析完成后后台发送，不阻塞导出。
@@ -187,6 +193,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-08: [新增] 支持将 `png`/`jpg`/`jpeg`/`pdf` 文件拖入预览表格区域直接开始识别，与“选择文件并开始处理”共用批量入口，覆盖麒麟 aarch64、Windows、macOS 三端；`requirements.txt` 增加 `tkinterdnd2`，Windows/麒麟打包随程序携带 TkDND 二进制，macOS 源码运行
 - 2026-09-07: [调整] 麒麟 Linux 预览表格列标题字号调小一号，界面序号列默认宽度增加 5px；仅影响 Linux/麒麟，Windows 与 macOS 视觉保持不变
 - 2026-09-07: [修复] 修复麒麟 Linux 启动时 `tkinter.TclError: bad argument 'zoomed'` 导致窗口不显示的问题：Linux 不再调用 Windows 专用的 `win.state("zoomed")`，改用兼容的最大窗口方式
 - 2026-09-06: [新增] 适配银河麒麟 V10 桌面版 aarch64（华为鲲鹏/飞腾）：字体自动探测、新增 `build_linux.sh` 自动检查并安装 Python 3.8+ / `python3-pip` / `python3-tk`，系统包与 Python 依赖均使用国内镜像源构建 PyInstaller onedir 产物，并同步 README/CONTEXT 文档

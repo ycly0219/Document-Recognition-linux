@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from config import MODEL_MAP
 from excel_export import (
@@ -96,6 +97,7 @@ def _resolve_cjk_font_family(root):
 
 
 MAX_BATCH_FILES = 5
+SUPPORTED_DROP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 MANUAL_STATUS = "人工填写"
 MANUAL_FILENAME = "空白单据"
 OSCAR_HEADER_DISPLAY_LABELS = {
@@ -489,18 +491,8 @@ def poll_log_queue():
 
 # ---------------- 主流程函数 ----------------
 def run_task():
-    """根据当前模板启动真实或模拟批量处理。"""
-    if continue_query_active:
-        messagebox.showwarning(
-            "温馨提示",
-            "正在继续查询原任务，请等待完成后再次选择文件"
-        )
-        return
+    """按钮入口：弹出文件选择框后启动真实或模拟批量处理。"""
     select_text = combo_model.get().strip()
-    if not select_text or select_text not in MODEL_MAP:
-        messagebox.showwarning("温馨提示", "请先选择单据规则！")
-        return
-
     mock_mode = mock_var.get()
     files = ()
     if not mock_mode:
@@ -517,12 +509,27 @@ def run_task():
         )
         if not files:
             return
-        if len(files) > MAX_BATCH_FILES:
-            messagebox.showwarning(
-                "温馨提示",
-                f"每次最多选择 {MAX_BATCH_FILES} 个文件，请重新选择。"
-            )
-            return
+    _launch_batch(files, select_text, mock_mode)
+
+
+def _launch_batch(files, select_text, mock_mode):
+    """按已选文件启动真实或模拟批量处理。"""
+    if continue_query_active:
+        messagebox.showwarning(
+            "温馨提示",
+            "正在继续查询原任务，请等待完成后再次选择文件"
+        )
+        return
+    if not select_text or select_text not in MODEL_MAP:
+        messagebox.showwarning("温馨提示", "请先选择单据规则！")
+        return
+
+    if not mock_mode and len(files) > MAX_BATCH_FILES:
+        messagebox.showwarning(
+            "温馨提示",
+            f"每次最多选择 {MAX_BATCH_FILES} 个文件，请重新选择。"
+        )
+        return
 
     clear_preview()
     abort_event.clear()
@@ -541,6 +548,38 @@ def run_task():
     )
     worker_thread.start()
     win.after(100, poll_ui_queue)
+
+
+def _parse_dropped_files(event):
+    """把 TkDND 返回的原始 Tcl 列表解析为文件路径列表。"""
+    return list(win.tk.splitlist(event.data))
+
+
+def _validate_drop_files(paths):
+    """校验拖入文件类型和数量，合法时返回 (文件列表, 空错误)。"""
+    if not paths:
+        return None, "未识别到可导入的文件。"
+    invalid = [
+        path for path in paths
+        if os.path.splitext(path)[1].lower() not in SUPPORTED_DROP_EXTENSIONS
+    ]
+    if invalid:
+        return None, "仅支持拖入 PNG/JPG/JPEG/PDF 文件。"
+    if len(paths) > MAX_BATCH_FILES:
+        return None, f"每次最多选择 {MAX_BATCH_FILES} 个文件，请重新选择。"
+    return paths, ""
+
+
+def on_file_drop(event):
+    """接收拖入文件并按按钮一致逻辑启动批量处理。"""
+    if _background_task_active() or continue_query_active:
+        messagebox.showwarning("温馨提示", "请等待当前任务完成后再拖入文件")
+        return
+    files, error = _validate_drop_files(_parse_dropped_files(event))
+    if error:
+        messagebox.showwarning("温馨提示", error)
+        return
+    _launch_batch(files, combo_model.get().strip(), mock_var.get())
 
 
 def abort_processing():
@@ -2054,7 +2093,7 @@ def poll_ui_queue():
 
 
 # ========== 界面部分 ==========
-win = tk.Tk()
+win = TkinterDnD.Tk()
 win.title("GE单据批量OCR处理工具")
 max_width, max_height = win.maxsize()
 win.geometry(f"{max_width}x{max_height}")
@@ -2143,6 +2182,8 @@ current_file_label.pack(fill=tk.X, padx=2, pady=(0, 4))
 preview_notebook = ttk.Notebook(table_frame)
 preview_notebook.pack(fill=tk.BOTH, expand=True)
 preview_notebook.bind("<<NotebookTabChanged>>", on_preview_tab_changed)
+table_frame.drop_target_register(DND_FILES)
+table_frame.dnd_bind("<<Drop>>", on_file_drop)
 
 style = ttk.Style(win)
 if sys.platform == "win32":

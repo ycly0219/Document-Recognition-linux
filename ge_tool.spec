@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 
 project_root = Path(SPECPATH).resolve()
@@ -9,6 +10,7 @@ datas = [
     (str(project_root / "DOC_SALESORDER_HEADER.xlsx"), "."),
     (str(project_root / "DOC_SALESORDER_HEADER_1.xlsx"), "."),
 ]
+datas += collect_data_files("tkinterdnd2")
 
 a = Analysis(
     ["tool.py"],
