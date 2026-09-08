@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+AGENTS.md
+*.xlsx
+!DOC_PO_HEADER.xlsx
+!DOC_SALESORDER_HEADER.xlsx
+!DOC_SALESORDER_HEADER_1.xlsx
+CONTEXT.md
+# PyInstaller outputs
+build/
+dist/
+tests/
