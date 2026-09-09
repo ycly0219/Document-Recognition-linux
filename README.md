@@ -47,7 +47,7 @@
 - 顶部「确认并导出」与「中止」之间提供「接口发送」按钮；对 `GE-发票单`、`GE-ORACLE拣货单`、`GE-OSCAR拣货单` 通用，仅当前单据页签有可发送明细时启用，点击后弹出上下分栏只读窗口：上方固定展示组装好的当前模板 WMS JSON 报文，下方展示接口返回内容（状态 + 格式化 JSON），默认报文区约 70%、返回区约 30%，重新发送后返回内容覆盖上一次回告；接口发送与二级窗口确认发送使用深色文字，二级窗口「新增产品」「确认发送」与「关闭」固定位于底部右侧；打开接口发送二级窗口时最小化程序，从任务栏恢复后主窗口与二级窗口一并显示
 - 接口发送二级窗口底部「确认发送」左侧及主界面「查询日志」右侧均提供「新增产品」；点击后在独立模态窗口录入产品主数据并发送 Flux WMS `putSKU`，产品编码/产品描述必填且标红加粗，六个产品属性选择框联动是否医疗器械，医疗器械勾选后开放有效期及日/月/年单位填写；发送成功/失败回告展示在弹窗内，成功后弹窗保留便于连续录入，可「清空」继续新增
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
-- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与 `hedi01-13` 等已定义字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
+- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
 - `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07/13/14/15`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
 - Flux WMS `putOriginalSalesOrder` 字段映射文档已同步到发送实现，覆盖 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 销售订单导出字段到报文字段的映射，详见 `docs/wms_put_original_sales_order_mapping.md`
 - 解析完成后按文件生成多个预览页签，页签只显示文件名，顶部单独展示当前预览文件，页签内显示处理状态
@@ -193,6 +193,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-09: [变更] `GE-ORACLE拣货单` `putOriginalSalesOrder` 报文不再发送 `hedi13`，`Pick From Subinv` 仅映射 `hedi12`
 - 2026-09-08: [新增] 支持将 `png`/`jpg`/`jpeg`/`pdf` 文件拖入预览表格区域直接开始识别，与“选择文件并开始处理”共用批量入口，覆盖麒麟 aarch64、Windows、macOS 三端；`requirements.txt` 增加 `tkinterdnd2`，Windows/麒麟打包随程序携带 TkDND 二进制，macOS 源码运行
 - 2026-09-07: [调整] 麒麟 Linux 预览表格列标题字号调小一号，界面序号列默认宽度增加 5px；仅影响 Linux/麒麟，Windows 与 macOS 视觉保持不变
 - 2026-09-07: [修复] 修复麒麟 Linux 启动时 `tkinter.TclError: bad argument 'zoomed'` 导致窗口不显示的问题：Linux 不再调用 Windows 专用的 `win.state("zoomed")`，改用兼容的最大窗口方式

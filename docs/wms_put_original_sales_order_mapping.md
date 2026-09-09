@@ -47,7 +47,7 @@ PRICE              = "0"
 | `hedi08` | `Shipping Instruction`（S） | 无来源省略 | 原值 |
 | `hedi11` | `Special Instruction`（T） | 无来源省略 | 原值 |
 | `hedi12` | `Pick From Subinv`（U） | 无来源省略 | 原值 |
-| `hedi13` | `Pick From Subinv`（U） | `供应商`（V） | 与 `hedi12` 的 ORACLE 来源一致 |
+| `hedi13` | 无来源省略 | `供应商`（V） | ORACLE 不发送；OSCAR 原值 |
 | `hedi14` | 无来源省略 | `收货人`（W） | 原值 |
 | `hedi15` | 无来源省略 | `收货人电话`（X） | 原值 |
 | `userDefine1..5` | `udf01..udf05`（Y-AC） | `udf01..udf05`（AC-AG） | 列位置映射；ORACLE `udf01` 当前来自 `SHIP TO NO`，其余当前为空 |

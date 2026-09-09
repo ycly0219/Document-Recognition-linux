@@ -200,9 +200,6 @@ def _build_oracle_put_original_sales_order_payload(header_values, detail_rows):
     _optional_item(
         header, "hedi12", header_values.get("Pick From Subinv")
     )
-    _optional_item(
-        header, "hedi13", header_values.get("Pick From Subinv")
-    )
     _optional_item(header, "userDefine1", header_values.get("SHIP TO NO"))
 
     pick_from_subinv = header_values.get("Pick From Subinv")
