@@ -72,12 +72,12 @@ def _optional_item(target, key, value):
 
 
 _PUT_SKU_CHECKBOX_FIELDS = (
-    ("serial_control", "skuGroup1", "SNY"),
-    ("batch_control", "skuGroup2", "LOTY"),
-    ("expiry_control", "skuGroup3", "EXPY"),
-    ("dangerous", "skuGroup4", "HAZARDY"),
-    ("medical_device", "freightClass", "MD"),
-    ("tube", "skuGroup5", "TUBE"),
+    ("serial_control", "skuGroup1", "SNY", "N"),
+    ("batch_control", "skuGroup2", "LOTY", "N"),
+    ("expiry_control", "skuGroup3", "EXPY", "N"),
+    ("dangerous", "skuGroup4", "HAZARDY", "N"),
+    ("medical_device", "freightClass", "MD", ""),
+    ("tube", "skuGroup5", "TUBE", "N"),
 )
 
 _SHELF_LIFE_UNIT_VALUES = {
@@ -133,8 +133,10 @@ def build_put_sku_payload(form):
         "activeFlag": "Y",
         "packId": "HD78_E841_01",
     }
-    for form_key, field, checked_value in _PUT_SKU_CHECKBOX_FIELDS:
-        header[field] = checked_value if _checked(form.get(form_key)) else ""
+    for form_key, field, checked_value, no_value in _PUT_SKU_CHECKBOX_FIELDS:
+        header[field] = (
+            checked_value if _checked(form.get(form_key)) else no_value
+        )
     header.update({
         "shelfLifeFlag": "Y" if medical_device else "",
         "shelfLifeUnit": (
