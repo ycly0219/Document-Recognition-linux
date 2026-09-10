@@ -234,7 +234,6 @@ def _build_oscar_put_original_sales_order_payload(header_values, detail_rows):
         "warehouseId": WMS_WAREHOUSE_ID,
         "customerId": WMS_CUSTOMER_ID,
         "consigneeId": "CONSIGNEEID",
-        "consigneeName": CONSIGNEE_NAME,
     }
     _optional_item(
         header,
@@ -255,9 +254,9 @@ def _build_oscar_put_original_sales_order_payload(header_values, detail_rows):
     _optional_item(header, "hedi05", header_values.get("时效"))
     _optional_item(header, "hedi06", header_values.get("SSO"))
     _optional_item(header, "hedi07", header_values.get("姓名"))
-    _optional_item(header, "hedi13", header_values.get("供应商"))
-    _optional_item(header, "hedi14", header_values.get("收货人"))
-    _optional_item(header, "hedi15", header_values.get("收货人电话"))
+    _optional_item(header, "consigneeName", header_values.get("供应商"))
+    _optional_item(header, "consigneeContact", header_values.get("收货人"))
+    _optional_item(header, "consigneeTel1", header_values.get("收货人电话"))
 
     details = []
     for line_no, row in enumerate(detail_rows or [], start=1):

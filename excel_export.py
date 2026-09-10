@@ -137,17 +137,17 @@ _OSCAR_FIXED_VALUES = {
     "E": "Y",
     "F": "GEHC",
     "Z": "CONSIGNEEID",
-    "AI": "WH004078",
-    "AJ": "GEHC",
-    "AL": "00",
-    "AN": "OSCAR",  # 货物来源
-    "AT": "EA",
-    "AU": "HD78_E841_01",
-    "AV": "HD78_E841_01",
-    "AW": "0",
-    "AX": "0",
-    "AY": "0",
+    "AL": "WH004078",
+    "AM": "GEHC",
+    "AO": "00",
+    "AQ": "OSCAR",  # 货物来源
+    "AW": "EA",
+    "AX": "HD78_E841_01",
+    "AY": "HD78_E841_01",
     "AZ": "0",
+    "BA": "0",
+    "BB": "0",
+    "BC": "0",
 }
 
 _OSCAR_DYNAMIC_COLUMNS = {
@@ -158,18 +158,18 @@ _OSCAR_DYNAMIC_COLUMNS = {
     "P": 13,   # 时效
     "Q": 9,    # SSO
     "R": 11,   # 姓名
-    "V": 8,    # 供应商
-    "W": 10,   # 收货人
-    "X": 14,   # 收货人电话
-    "AA": 12,  # 收货地址
-    "AB": 15,  # 申请说明
-    "AK": 2,   # 物料编号
-    "AO": 7,   # 仓库
-    "AP": 6,   # 状态: 好件->GOOD
-    "AQ": 4,   # 序列号
-    "AS": 3,   # 数量
-    "BB": 18,  # 跟踪号
-    "BC": 5,   # 货位
+    "AA": 8,   # 供应商 -> 收货人名称
+    "AB": 10,  # 收货人 -> 收货联系人
+    "AC": 14,  # 收货人电话 -> 收货人电话1
+    "AD": 12,  # 收货地址
+    "AE": 15,  # 申请说明
+    "AN": 2,   # 物料编号
+    "AR": 7,   # 仓库
+    "AS": 6,   # 状态: 好件->GOOD
+    "AT": 4,   # 序列号
+    "AV": 3,   # 数量
+    "BE": 18,  # 跟踪号
+    "BF": 5,   # 货位
 }
 
 _ORACLE_MONTH_NAMES = {
@@ -322,9 +322,9 @@ def _export_oscar_salesorder_template(core_data, output_file):
             value = _row_value(preview_row, source_index)
             if col_name == "C":
                 value = get_order_type_value("GE-OSCAR拣货单", value)
-            elif col_name == "AP":
+            elif col_name == "AS":
                 value = "GOOD" if str(value).strip() == "好件" else ""
-            elif col_name == "AQ":
+            elif col_name == "AT":
                 value = _normalize_oscar_serial(value)
             ws[f"{col_name}{row_index}"] = value
 

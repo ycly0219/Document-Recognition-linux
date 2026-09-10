@@ -11,14 +11,14 @@ from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from config import MODEL_MAP
+from config import FEISHU_CALL_TIMES, MODEL_MAP
 from excel_export import (
     export_excel,
     get_last_export_dir,
     get_output_dir,
     save_last_export_dir,
 )
-from feishu_client import get_tenant_access_token, send_to_bitable
+from feishu_client import get_tenant_access_token, send_to_bitable_repeated
 from logging_utils import log_queue, print_log
 from mock_data import generate_mock_data
 from ocr_client import (
@@ -621,11 +621,14 @@ def process_batch_worker(files, select_text, current_model_id, mock_mode):
         ui_message_queue.put(("processing_error", f"处理流程异常: {str(e)}"))
 
 
-def _send_feishu_statistics(select_text, total_files):
-    """后台发送本批次飞书统计，失败只记录日志。"""
+def _send_feishu_statistics(select_text):
+    """后台按配置次数发送单个成功文件的飞书统计，失败只记录日志。"""
     print_log("开始同步统计数据至飞书多维表格...")
     token = get_tenant_access_token()
-    send_to_bitable(token, select_text, total_files)
+    if not token:
+        print_log("无有效Token，跳过写入飞书多维表格")
+        return
+    send_to_bitable_repeated(token, select_text, FEISHU_CALL_TIMES)
 
 
 def process_batch(files, select_text, current_model_id):
@@ -677,6 +680,12 @@ def process_batch(files, select_text, current_model_id):
                 res_msg = "处理成功"
                 success_count += 1
                 print_log(f"✅ [{filename}] 处理成功")
+                if not abort_event.is_set():
+                    threading.Thread(
+                        target=_send_feishu_statistics,
+                        args=(select_text,),
+                        daemon=True,
+                    ).start()
 
             else:
                 raise Exception("OCR返回识别状态异常")
@@ -712,11 +721,6 @@ def process_batch(files, select_text, current_model_id):
     if abort_event.is_set():
         print_log("批次已由用户中止，不进入预览")
         return False
-    threading.Thread(
-        target=_send_feishu_statistics,
-        args=(select_text, total_files),
-        daemon=True,
-    ).start()
 
     ui_message_queue.put(("preview", select_text,
                           get_core_headers(select_text), file_results,
@@ -1336,6 +1340,11 @@ def continue_task_worker(info, select_text, req_uuid, cancel_event):
             updated_log_row[6] = "处理成功"
         if cancel_event.is_set():
             raise OCRAborted("OCR识别已由用户中止")
+        threading.Thread(
+            target=_send_feishu_statistics,
+            args=(select_text,),
+            daemon=True,
+        ).start()
         print_log(f"✅ [{filename}] 继续查询成功")
         ui_message_queue.put((
             "continue_success", info, select_text, "成功", "处理成功",

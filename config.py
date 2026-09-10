@@ -51,5 +51,6 @@ WMS_WAREHOUSE_ID = "WH004078"
 # ---------------- 飞书多维表格配置 ----------------
 FEISHU_APP_ID = "cli_aa978beae8f81cca"
 FEISHU_APP_SECRET = "ywHBY0AmJc00TojMIghLzgRHpyngHXpR"
+FEISHU_CALL_TIMES = 1  # 每个成功文件后台写入飞书统计的次数
 BITABLE_RECORDS_URL = "https://open.feishu.cn/open-apis/bitable/v1/apps/Jqfwbt2bWaLq7AswNz2c1iSUn4i/tables/tblQRssVXgCA7mEs/records"
 # =============================================================

@@ -30,7 +30,7 @@ def get_tenant_access_token():
 
 
 def send_to_bitable(token, rule_name, total_count):
-    """把本批统计写入飞书多维表格。"""
+    """把一条统计记录写入飞书多维表格。"""
     if not token:
         print_log("无有效Token，跳过写入飞书多维表格")
         return False
@@ -53,3 +53,10 @@ def send_to_bitable(token, rule_name, total_count):
     except Exception as e:
         print_log(f"写入飞书表格失败: {str(e)}")
         return False
+
+
+def send_to_bitable_repeated(token, rule_name, call_times):
+    """按配置次数固定写入单个文件的飞书统计，单次失败不中断后续调用。"""
+    for index in range(call_times):
+        print_log(f"写入飞书统计第{index + 1}/{call_times}次")
+        send_to_bitable(token, rule_name, 1)
