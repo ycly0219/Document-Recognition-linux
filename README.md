@@ -45,7 +45,7 @@
 - `GE-发票单` 多行拆分场景预览增加原始行汇总：原始 QTY 显示为可展开汇总行，子行向内缩进并编号为 `2.1`/`2.2`；汇总行不写入 Excel，导出仍只写拆分后的子行；只拆出 1 条子行（如 QTY=1）时直接显示普通明细行，不显示汇总
 - `GE-发票单` 拆分汇总栏使用浅琥珀色加粗显示，仅显示 `ITEM NUMBER`（物料编码）、`QTY`（数量）和 `LPN Number=原始行汇总`，其余列留空
 - 顶部「确认并导出」与「中止」之间提供「接口发送」按钮；对 `GE-发票单`、`GE-ORACLE拣货单`、`GE-OSCAR拣货单` 通用，仅当前单据页签有可发送明细时启用，点击后弹出上下分栏只读窗口：上方固定展示组装好的当前模板 WMS JSON 报文，下方展示接口返回内容（状态 + 格式化 JSON），默认报文区约 70%、返回区约 30%，重新发送后返回内容覆盖上一次回告；接口发送与二级窗口确认发送使用深色文字，二级窗口「新增产品」「确认发送」与「关闭」固定位于底部右侧；打开接口发送二级窗口时最小化程序，从任务栏恢复后主窗口与二级窗口一并显示
-- 接口发送二级窗口底部「确认发送」左侧及主界面「查询日志」右侧均提供「新增产品」；点击后在独立模态窗口录入产品主数据并发送 Flux WMS `putSKU`，产品编码/产品描述必填且标红加粗，六个产品属性选择框联动是否医疗器械，医疗器械勾选后开放有效期及日/月/年单位填写；发送成功/失败回告展示在弹窗内，成功后弹窗保留便于连续录入，可「清空」继续新增
+- 接口发送二级窗口底部「确认发送」左侧及主界面「查询日志」右侧均提供「新增产品」；点击后在独立模态窗口录入产品主数据并通过一次 Flux WMS `putSKU` 请求批量新增到 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同；产品编码/产品描述必填且标红加粗，六个产品属性选择框联动是否医疗器械，医疗器械勾选后开放有效期及日/月/年单位填写；发送成功/失败回告展示在弹窗内，成功后弹窗保留便于连续录入，可「清空」继续新增
 - 新增产品时序列号/批次/效期/危险品/球管五个属性未勾选时，`putSKU` 报文的 `skuGroup1-5` 统一传 `N`；勾选时仍分别传 `SNY`/`LOTY`/`EXPY`/`HAZARDY`/`TUBE`，`freightClass` 与有效期字段保持现状
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
 - `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
@@ -173,7 +173,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - 三种单据的 `订单类型` 选项、默认值和导出代码集中在 `parsers.py` 顶部常量中；后续扩展只需在对应模板的选项常量中新增一项
 - Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射集中在 `wms_client.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
 - Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射集中在 `wms_client.py`
-- Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；固定货主 `GEHC`，新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
+- Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
 
 当前项目仅内部使用，采用硬编码方式管理以上配置。所有地址、密钥、模型 ID、字段名和解析规则都写在代码中，不迁移至外部环境变量或者配置文件中。
 
@@ -194,6 +194,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-10: [变更] 新增产品由单货主 `GEHC` 改为一次 `putSKU` 请求批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同
 - 2026-09-10: [变更] 新增产品未勾选序列号/批次/效期/危险品/球管时，`putSKU` 报文 `skuGroup1-5` 由空字符串改为传 `N`，勾选值不变；`freightClass` 及有效期字段保持现状
 - 2026-09-10: [变更] 飞书统计由整批写入一条汇总记录改为每个识别成功文件后台按 `FEISHU_CALL_TIMES` 固定次数写入 `数量=1` 的记录；失败与“结果未生成”不写，「继续查询原任务」成功也写
 - 2026-09-09: [变更] `GE-OSCAR拣货单` 模板在 Z 右侧新增 AA/AB/AC（收货人名称/收货联系人/收货人电话1），分别映射 `供应商/收货人/收货人电话`，原 `hedi13/14/15` 不再导出；接口改为 `consigneeName/consigneeContact/consigneeTel1`，不再发送 `hedi13/14/15`

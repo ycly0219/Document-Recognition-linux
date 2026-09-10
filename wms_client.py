@@ -10,6 +10,7 @@ from config import (
     WMS_CUSTOMER_ID,
     WMS_PUT_ORIGINAL_SALES_ORDER_URL,
     WMS_PUT_PURCHASE_ORDER_URL,
+    WMS_PUT_SKU_CUSTOMER_IDS,
     WMS_PUT_SKU_URL,
     WMS_WAREHOUSE_ID,
 )
@@ -127,7 +128,6 @@ def build_put_sku_payload(form):
     sku = "" if raw_sku is None else str(raw_sku)
     medical_device = _checked(form.get("medical_device"))
     header = {
-        "customerId": WMS_CUSTOMER_ID,
         "sku": sku,
         "skuDescr1": _text(form.get("sku_descr")),
         "activeFlag": "Y",
@@ -148,7 +148,11 @@ def build_put_sku_payload(form):
         "qcPoint": "BEFORRECEIVING",
         "qcRule": "HD78_E841_01",
     })
-    return {"data": {"header": [header]}}
+    headers = [
+        {"customerId": customer_id, **header}
+        for customer_id in WMS_PUT_SKU_CUSTOMER_IDS
+    ]
+    return {"data": {"header": headers}}
 
 
 def _build_oracle_put_original_sales_order_payload(header_values, detail_rows):

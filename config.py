@@ -46,6 +46,12 @@ WMS_PUT_SKU_URL = (
     "&timestamp=&sign=123&format=json"
 )
 WMS_CUSTOMER_ID = "GEHC"
+WMS_PUT_SKU_CUSTOMER_IDS = (
+    WMS_CUSTOMER_ID,
+    "GEHC-BF",
+    "GEHC-DBY",
+    "GEHC-ZLKC",
+)
 WMS_WAREHOUSE_ID = "WH004078"
 
 # ---------------- 飞书多维表格配置 ----------------
