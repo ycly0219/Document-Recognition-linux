@@ -169,8 +169,8 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - OCR 接口地址、上传接口、结果查询接口
 - OCR App 凭据、组织号、模板对应的 `modelId`
 - OCR 最长轮询等待秒数 `OCR_MAX_POLL_SECONDS=300`、轮询间隔 `OCR_RETRY_INTERVAL=5`（原有 `OCR_MAX_RETRY` 保留）
-- 飞书 App 凭据、多维表格记录写入地址、每个成功文件写入次数 `FEISHU_CALL_TIMES=1`
-- 三种单据的 `订单类型` 选项、默认值和导出代码集中在 `parsers.py` 顶部常量中；后续扩展只需在对应模板的选项常量中新增一项
+- 飞书 App 凭据、多维表格记录写入地址、每个成功文件写入次数 `FEISHU_CALL_TIMES=3`
+- 三种单据的 `订单类型` 选项、默认值和导出代码集中在 `config.py`；后续扩展只需在对应模板的 `ORDER_TYPE_OPTIONS_BY_TEMPLATE` 映射中新增一项，并按需调整 `DEFAULT_ORDER_TYPE_BY_TEMPLATE`
 - Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射集中在 `wms_client.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
 - Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射集中在 `wms_client.py`
 - Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
@@ -194,6 +194,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-11: [变更] 三种单据的订单类型选项、默认值和导出代码由 `parsers.py` 迁移到 `config.py`，业务查询函数与映射行为保持不变；同步飞书默认调用次数测试和配置说明为 `3`
 - 2026-09-10: [变更] 新增产品由单货主 `GEHC` 改为一次 `putSKU` 请求批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同
 - 2026-09-10: [变更] 新增产品未勾选序列号/批次/效期/危险品/球管时，`putSKU` 报文 `skuGroup1-5` 由空字符串改为传 `N`，勾选值不变；`freightClass` 及有效期字段保持现状
 - 2026-09-10: [变更] 飞书统计由整批写入一条汇总记录改为每个识别成功文件后台按 `FEISHU_CALL_TIMES` 固定次数写入 `数量=1` 的记录；失败与“结果未生成”不写，「继续查询原任务」成功也写

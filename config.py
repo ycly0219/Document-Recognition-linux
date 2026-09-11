@@ -29,6 +29,37 @@ MODEL_MAP = {
     "GE-发票单": "logistics_east_ge_invoice_99999_1503"
 }
 
+# 订单类型配置（模板 -> {中文标签: 导出代码}）
+_PICK_ORDER_TYPE_OPTIONS = {
+    "国内出库_FE": "GNCK_FE",
+    "国内出库维修订单": "GNCK_WX",
+    "国内出库报废订单": "GNCK_BF",
+    "国内出库补货订单": "GNCK_BH",
+    "国内出库大保养订单": "GNCK_DBY",
+    "国外出库400": "GWCK_400",
+    "国外出库600": "GWCK_600",
+    "国外出库700": "GWCK_700",
+    "国外出库900": "GWCK_900",
+}
+
+_INVOICE_ORDER_TYPE_OPTIONS = {
+    "国外入库": "OSI",
+    "国内采购入库": "POIN",
+    "国内外维修入库": "REPAIRIN",
+}
+
+ORDER_TYPE_OPTIONS_BY_TEMPLATE = {
+    "GE-ORACLE拣货单": _PICK_ORDER_TYPE_OPTIONS,
+    "GE-OSCAR拣货单": _PICK_ORDER_TYPE_OPTIONS,
+    "GE-发票单": _INVOICE_ORDER_TYPE_OPTIONS,
+}
+
+DEFAULT_ORDER_TYPE_BY_TEMPLATE = {
+    "GE-ORACLE拣货单": "",
+    "GE-OSCAR拣货单": "",
+    "GE-发票单": "国外入库",
+}
+
 # ---------------- Flux WMS 接口对接配置 ----------------
 WMS_PUT_PURCHASE_ORDER_URL = (
     "https://sinoewms-qas.i.sinotrans.com/datahubjson/FluxWmsJsonApi_WJC/"

@@ -2,49 +2,18 @@
 
 import re
 
+from config import DEFAULT_ORDER_TYPE_BY_TEMPLATE, ORDER_TYPE_OPTIONS_BY_TEMPLATE
 from logging_utils import print_log
-
-
-# 订单类型选项集中维护，后续扩展只需增加对应模板的选项。
-PICK_ORDER_TYPE_OPTIONS = (
-    ("国内出库_FE", "GNCK_FE"),
-    ("国内出库维修订单", "GNCK_WX"),
-    ("国内出库报废订单", "GNCK_BF"),
-    ("国内出库补货订单", "GNCK_BH"),
-    ("国内出库大保养订单", "GNCK_DBY"),
-    ("国外出库400", "GWCK_400"),
-    ("国外出库600", "GWCK_600"),
-    ("国外出库700", "GWCK_700"),
-    ("国外出库900", "GWCK_900"),
-)
-
-INVOICE_ORDER_TYPE_OPTIONS = (
-    ("国外入库", "OSI"),
-    ("国内采购入库", "POIN"),
-    ("国内外维修入库", "REPAIRIN"),
-)
-
-ORDER_TYPE_OPTIONS_BY_TEMPLATE = {
-    "GE-ORACLE拣货单": PICK_ORDER_TYPE_OPTIONS,
-    "GE-OSCAR拣货单": PICK_ORDER_TYPE_OPTIONS,
-    "GE-发票单": INVOICE_ORDER_TYPE_OPTIONS,
-}
-
-DEFAULT_ORDER_TYPE_BY_TEMPLATE = {
-    "GE-ORACLE拣货单": "",
-    "GE-OSCAR拣货单": "",
-    "GE-发票单": INVOICE_ORDER_TYPE_OPTIONS[0][0],
-}
 
 
 def get_order_type_labels(select_text):
     """返回指定模板可选订单类型中文标签。"""
-    return [label for label, _ in ORDER_TYPE_OPTIONS_BY_TEMPLATE.get(select_text, ())]
+    return list(ORDER_TYPE_OPTIONS_BY_TEMPLATE.get(select_text, {}))
 
 
 def get_order_type_value(select_text, label):
     """把订单类型中文标签转换为当前模板导出值，未知值原样返回。"""
-    mapping = dict(ORDER_TYPE_OPTIONS_BY_TEMPLATE.get(select_text, ()))
+    mapping = ORDER_TYPE_OPTIONS_BY_TEMPLATE.get(select_text, {})
     return mapping.get(str(label).strip(), label)
 
 

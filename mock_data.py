@@ -1,6 +1,7 @@
 """演示用固定样例数据，结构与真实解析结果一致，不调用接口。"""
 
-from parsers import DEFAULT_ORDER_TYPE_BY_TEMPLATE, get_core_headers
+from config import DEFAULT_ORDER_TYPE_BY_TEMPLATE
+from parsers import get_core_headers
 
 
 def generate_mock_data(select_text):
