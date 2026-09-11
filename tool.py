@@ -76,6 +76,8 @@ product_send_active = False
 product_window = None
 product_send_button = None
 product_response_text = None
+product_response_status = None
+wms_window_response_status = None
 
 FONT_CANDIDATES = (
     "Noto Sans CJK SC",
@@ -100,6 +102,32 @@ MAX_BATCH_FILES = 5
 SUPPORTED_DROP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 MANUAL_STATUS = "人工填写"
 MANUAL_FILENAME = "空白单据"
+RESPONSE_STATE_STYLES = {
+    "neutral": {
+        "text": "尚未发送",
+        "background": "#F8FAFC",
+        "foreground": "#475569",
+        "border": "#CBD5E1",
+    },
+    "sending": {
+        "text": "发送中...",
+        "background": "#EFF6FF",
+        "foreground": "#1D4ED8",
+        "border": "#BFDBFE",
+    },
+    "success": {
+        "text": "发送成功",
+        "background": "#ECFDF3",
+        "foreground": "#067647",
+        "border": "#ABEFC6",
+    },
+    "failure": {
+        "text": "发送失败",
+        "background": "#FEF3F2",
+        "foreground": "#B42318",
+        "border": "#FECDCA",
+    },
+}
 OSCAR_HEADER_DISPLAY_LABELS = {
     "供应商": "客户/供应商",
 }
@@ -451,7 +479,47 @@ def _wms_text_pane(parent, title):
     return text
 
 
-def _replace_wms_response(token, text):
+def _set_response_state(text_widget, status_label, state):
+    """同步更新接口返回区的状态条和文本边框颜色。"""
+    style = RESPONSE_STATE_STYLES.get(state, RESPONSE_STATE_STYLES["neutral"])
+    if status_label is not None:
+        status_label.config(
+            text=style["text"],
+            background=style["background"],
+            foreground=style["foreground"],
+        )
+    if text_widget is not None:
+        text_widget.config(
+            highlightbackground=style["border"],
+            highlightcolor=style["border"],
+        )
+
+
+def _wms_response_pane(parent, title):
+    """创建带全宽状态条和状态边框的只读接口返回区。"""
+    status_label = tk.Label(
+        parent, anchor="w", font=BUTTON_FONT, padx=10, pady=5
+    )
+    status_label.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+    tk.Label(parent, text=title, font=BUTTON_FONT, anchor="w").grid(
+        row=1, column=0, sticky="w", pady=(0, 4)
+    )
+    text = tk.Text(
+        parent, state=tk.DISABLED, wrap=tk.NONE, highlightthickness=2
+    )
+    vsb = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
+    hsb = ttk.Scrollbar(parent, orient="horizontal", command=text.xview)
+    text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    text.grid(row=2, column=0, sticky="nsew")
+    vsb.grid(row=2, column=1, sticky="ns")
+    hsb.grid(row=3, column=0, sticky="ew")
+    parent.rowconfigure(2, weight=1)
+    parent.columnconfigure(0, weight=1)
+    _set_response_state(text, status_label, "neutral")
+    return text, status_label
+
+
+def _replace_wms_response(token, text, state="neutral"):
     """用最新接口回告覆盖本次发送对应的二级窗口返回区。"""
     if wms_window_response_text is None or id(wms_window_response_text) != token:
         return
@@ -463,11 +531,14 @@ def _replace_wms_response(token, text):
         wms_window_response_text.insert(tk.END, text)
         wms_window_response_text.yview_moveto(0)
         wms_window_response_text.config(state=tk.DISABLED)
+        _set_response_state(
+            wms_window_response_text, wms_window_response_status, state
+        )
     except tk.TclError:
         pass
 
 
-def _replace_product_response(token, text):
+def _replace_product_response(token, text, state="neutral"):
     """用最新产品接口回告覆盖新增产品窗口返回区。"""
     if product_response_text is None or id(product_response_text) != token:
         return
@@ -479,6 +550,9 @@ def _replace_product_response(token, text):
         product_response_text.insert(tk.END, text)
         product_response_text.yview_moveto(0)
         product_response_text.config(state=tk.DISABLED)
+        _set_response_state(
+            product_response_text, product_response_status, state
+        )
     except tk.TclError:
         pass
 
@@ -1495,7 +1569,8 @@ def export_worker(export_targets, output_dir):
 
 def close_product_window():
     """关闭新增产品窗口并清理界面引用。"""
-    global product_window, product_response_text, product_send_button
+    global product_window, product_response_text, product_response_status
+    global product_send_button
     if product_window is not None:
         try:
             product_window.destroy()
@@ -1503,6 +1578,7 @@ def close_product_window():
             pass
     product_window = None
     product_response_text = None
+    product_response_status = None
     product_send_button = None
     if wms_window is not None:
         try:
@@ -1514,7 +1590,8 @@ def close_product_window():
 
 def open_add_product_window(parent=None):
     """打开新增产品模态窗口，支持连续录入并发送产品主数据。"""
-    global product_window, product_response_text, product_send_button
+    global product_window, product_response_text, product_response_status
+    global product_send_button
     if product_send_active:
         return
     if product_window is not None:
@@ -1644,11 +1721,11 @@ def open_add_product_window(parent=None):
 
     response_frame = tk.Frame(body)
     response_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-    product_response_text = _wms_text_pane(response_frame, "接口返回内容")
+    product_response_text, product_response_status = _wms_response_pane(
+        response_frame, "接口返回内容"
+    )
     product_response_text.configure(height=5)
-    product_response_text.config(state=tk.NORMAL)
-    product_response_text.insert(tk.END, "尚未发送")
-    product_response_text.config(state=tk.DISABLED)
+    _replace_product_response(id(product_response_text), "尚未发送", "neutral")
 
     checkbox_vars = [
         serial_var, batch_var, expiry_var,
@@ -1698,6 +1775,9 @@ def open_add_product_window(parent=None):
         product_send_active = True
         product_send_button.config(state=tk.DISABLED, text="发送中...")
         token = id(product_response_text)
+        _replace_product_response(
+            token, "发送中...\n\n正在等待接口返回。", "sending"
+        )
         product_thread = threading.Thread(
             target=product_send_worker, args=(payload, token), daemon=True
         )
@@ -1734,22 +1814,25 @@ def product_send_worker(payload, token):
         response = send_put_sku(payload)
         text = format_wms_response(response)
         print_log(f"WMS产品接口回告：{text[:200]}")
-        if is_wms_send_success(response):
+        success = is_wms_send_success(response)
+        if success:
             result_text = f"发送成功\n\n{text}"
         else:
             result_text = f"发送失败：HTTP 状态或 returnFlag 不满足\n\n{text}"
-        ui_message_queue.put(("product_send_result", token, result_text))
+        ui_message_queue.put(
+            ("product_send_result", token, success, result_text)
+        )
     except Exception as e:
         print_log(f"WMS产品接口发送失败: {e}")
         ui_message_queue.put(
-            ("product_send_result", token, f"发送失败：{e}")
+            ("product_send_result", token, False, f"发送失败：{e}")
         )
 
 
 def close_wms_window():
     """关闭接口发送二级窗口并清理界面引用。"""
     global wms_window, wms_window_request_text, wms_window_response_text
-    global wms_confirm_button
+    global wms_window_response_status, wms_confirm_button
     close_product_window()
     if wms_window is not None:
         try:
@@ -1759,6 +1842,7 @@ def close_wms_window():
     wms_window = None
     wms_window_request_text = None
     wms_window_response_text = None
+    wms_window_response_status = None
     wms_confirm_button = None
 
 
@@ -1896,7 +1980,9 @@ def open_wms_send_window():
     paned.add(response_frame, minsize=120)
 
     wms_window_request_text = _wms_text_pane(request_frame, "组装报文")
-    wms_window_response_text = _wms_text_pane(response_frame, "接口返回内容")
+    wms_window_response_text, wms_window_response_status = _wms_response_pane(
+        response_frame, "接口返回内容"
+    )
 
     wms_window_request_text.config(state=tk.NORMAL)
     wms_window_request_text.insert(
@@ -1904,9 +1990,7 @@ def open_wms_send_window():
     )
     wms_window_request_text.config(state=tk.DISABLED)
 
-    wms_window_response_text.config(state=tk.NORMAL)
-    wms_window_response_text.insert(tk.END, "尚未发送")
-    wms_window_response_text.config(state=tk.DISABLED)
+    _replace_wms_response(id(wms_window_response_text), "尚未发送", "neutral")
 
     def start_wms_send():
         global wms_thread, wms_send_active
@@ -1916,6 +2000,9 @@ def open_wms_send_window():
         if wms_confirm_button is not None:
             wms_confirm_button.config(state=tk.DISABLED, text="发送中...")
         token = id(wms_window_response_text)
+        _replace_wms_response(
+            token, "发送中...\n\n正在等待接口返回。", "sending"
+        )
         wms_thread = threading.Thread(
             target=wms_send_worker,
             args=(payload, token, send_func, log_name),
@@ -1962,16 +2049,20 @@ def wms_send_worker(payload, token, send_func, log_name):
         response = send_func(payload)
         text = format_wms_response(response)
         print_log(f"WMS接口回告：{text[:200]}")
-        if is_wms_send_success(response):
+        success = is_wms_send_success(response)
+        if success:
             result_text = f"发送成功\n\n{text}"
-            ui_message_queue.put(("wms_send_result", token, result_text))
         else:
             result_text = f"发送失败：HTTP 状态或 returnFlag 不满足\n\n{text}"
-            ui_message_queue.put(("wms_send_result", token, result_text))
+        ui_message_queue.put(
+            ("wms_send_result", token, success, result_text)
+        )
     except Exception as e:
         print_log(f"WMS接口发送失败: {e}")
         error_text = f"发送失败：{e}"
-        ui_message_queue.put(("wms_send_result", token, error_text))
+        ui_message_queue.put(
+            ("wms_send_result", token, False, error_text)
+        )
 
 
 def draw_progress_canvas():
@@ -2065,8 +2156,10 @@ def poll_ui_queue():
             on_preview_tab_changed()
             set_progress_state(100, "处理进度：续查未生成结果", "#D97706")
         elif kind == "product_send_result":
-            token, text = payload
-            _replace_product_response(token, text)
+            token, success, text = payload
+            _replace_product_response(
+                token, text, "success" if success else "failure"
+            )
             product_send_active = False
             if product_send_button is not None:
                 try:
@@ -2078,8 +2171,10 @@ def poll_ui_queue():
                     pass
             refresh_export_state()
         elif kind == "wms_send_result":
-            token, text = payload
-            _replace_wms_response(token, text)
+            token, success, text = payload
+            _replace_wms_response(
+                token, text, "success" if success else "failure"
+            )
             wms_send_active = False
             if wms_confirm_button is not None:
                 try:

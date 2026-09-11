@@ -48,6 +48,7 @@
 - 接口发送二级窗口底部「确认发送」左侧及主界面「查询日志」右侧均提供「新增产品」；点击后在独立模态窗口录入产品主数据并通过一次 Flux WMS `putSKU` 请求批量新增到 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同；产品编码/产品描述必填且标红加粗，六个产品属性选择框联动是否医疗器械，医疗器械勾选后开放有效期及日/月/年单位填写；发送成功/失败回告展示在弹窗内，成功后弹窗保留便于连续录入，可「清空」继续新增
 - 新增产品时序列号/批次/效期/危险品/球管五个属性未勾选时，`putSKU` 报文的 `skuGroup1-5` 统一传 `N`；勾选时仍分别传 `SNY`/`LOTY`/`EXPY`/`HAZARDY`/`TUBE`，`freightClass` 与有效期字段保持现状
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
+- 接口发送与新增产品的返回区使用跨平台 Tk 原生全宽状态条和文本边框：发送中为蓝色、成功为绿色、失败为红色、未发送为灰色；状态条始终保留明确文字，避免仅依赖颜色判断
 - `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
 - `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部可选发送 `consigneeName=供应商`、`consigneeContact=收货人`、`consigneeTel1=收货人电话`（空值省略），不再固定 `consigneeName=虚拟收货人`、不再发送 `hedi13/14/15`，仍映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
 - Flux WMS `putOriginalSalesOrder` 字段映射文档已同步到发送实现，覆盖 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 销售订单导出字段到报文字段的映射，详见 `docs/wms_put_original_sales_order_mapping.md`
@@ -195,6 +196,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 ## 更新记录
 
 - 2026-09-11: [变更] 三种单据的订单类型选项、默认值和导出代码由 `parsers.py` 迁移到 `config.py`，业务查询函数与映射行为保持不变；同步飞书默认调用次数测试和配置说明为 `3`
+- 2026-09-11: [样式] 「接口发送」与「新增产品」返回区新增全宽状态条及同色文本边框，使用 Tk 原生控件适配 Windows、macOS 与麒麟 Linux；发送中、成功、失败、未发送分别显示蓝色、绿色、红色和灰色，并保留状态文字
 - 2026-09-10: [变更] 新增产品由单货主 `GEHC` 改为一次 `putSKU` 请求批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同
 - 2026-09-10: [变更] 新增产品未勾选序列号/批次/效期/危险品/球管时，`putSKU` 报文 `skuGroup1-5` 由空字符串改为传 `N`，勾选值不变；`freightClass` 及有效期字段保持现状
 - 2026-09-10: [变更] 飞书统计由整批写入一条汇总记录改为每个识别成功文件后台按 `FEISHU_CALL_TIMES` 固定次数写入 `数量=1` 的记录；失败与“结果未生成”不写，「继续查询原任务」成功也写
