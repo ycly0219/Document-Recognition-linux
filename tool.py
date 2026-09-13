@@ -223,6 +223,12 @@ class EditableTreeview(ttk.Treeview):
             if row_id in selected
         ]
 
+    def has_clipboard(self):
+        return bool(self._clipboard)
+
+    def has_copyable_selection(self):
+        return bool(self._selected_rows_in_order())
+
     def copy_selected(self):
         selected = self._selected_rows_in_order()
         if not selected:
@@ -875,6 +881,8 @@ def _build_scrolled_preview_tree(parent, columns, rows, preview_groups=None):
         style="Preview.Treeview",
         selectmode="extended",
     )
+    tree.bind("<<TreeviewSelect>>",
+              lambda _event: refresh_row_action_state())
     tree.tag_configure("new_row", background="#FFF3CD")
     tree.tag_configure("zebra_even", background="#FFFFFF")
     tree.tag_configure("zebra_odd", background="#EFF5F9")
@@ -1263,11 +1271,18 @@ def on_preview_tab_changed(_event=None):
 
 
 def refresh_row_action_state():
-    """按当前预览页签状态刷新插入行按钮。"""
+    """按当前选中行与复制内容刷新插入/复制/粘贴按钮。"""
     active = active_tree is not None
     active_info = _active_preview_file()
     editable = active and active_info is not None
     insert_btn.config(state=tk.NORMAL if editable else tk.DISABLED)
+    copy_btn.config(
+        state=tk.NORMAL if editable and active_tree.has_copyable_selection()
+        else tk.DISABLED
+    )
+    paste_btn.config(
+        state=tk.NORMAL if editable and active_tree.has_clipboard() else tk.DISABLED
+    )
 
 
 def refresh_export_state():
@@ -2222,31 +2237,38 @@ mock_var = tk.BooleanVar(value=False)
 mock_check = tk.Checkbutton(top, text="模拟数据", variable=mock_var, font=BODY_FONT)
 mock_check.pack(side=tk.LEFT, padx=(0, 20))
 
-btn = tk.Button(top, text="选择文件并开始处理", command=run_task, width=22,
-                bg="#4CAF50", fg="#0B3D0F", font=BUTTON_FONT,
+btn = tk.Button(top, text="选择文件并开始处理", command=run_task,
+                padx=10, bg="#4CAF50", fg="#0B3D0F", font=BUTTON_FONT,
                 disabledforeground=DISABLED_FOREGROUND)
-btn.pack(side=tk.LEFT)
+btn.pack(side=tk.LEFT, padx=(0, 10))
+continue_btn = tk.Button(
+    top, text="继续查询原任务", command=continue_current_task,
+    padx=10, bg="#D97706", fg="#111827", font=BUTTON_FONT,
+    disabledforeground=DISABLED_FOREGROUND,
+    state=tk.DISABLED,
+)
+continue_btn.pack(side=tk.LEFT, padx=(0, 10))
 export_btn = tk.Button(top, text="确认并导出", command=start_export,
-                       width=16, bg="#2196F3", fg="#0A2540", font=BUTTON_FONT,
+                       padx=10, bg="#2196F3", fg="#0A2540", font=BUTTON_FONT,
                        disabledforeground=DISABLED_FOREGROUND,
                        state=tk.DISABLED)
-export_btn.pack(side=tk.LEFT, padx=(8, 0))
+export_btn.pack(side=tk.LEFT, padx=(0, 10))
 wms_send_btn = tk.Button(
     top, text="接口发送", command=open_wms_send_window,
-    width=10, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+    padx=10, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
     activebackground="#155E75", activeforeground="#111827",
     disabledforeground=DISABLED_FOREGROUND,
     state=tk.DISABLED,
 )
-wms_send_btn.pack(side=tk.LEFT, padx=(8, 0))
+wms_send_btn.pack(side=tk.LEFT, padx=(0, 10))
 abort_btn = tk.Button(
-    top, text="中止", command=abort_processing, width=10,
-    bg="#D92D20", fg="#111827", font=BUTTON_FONT,
+    top, text="中止", command=abort_processing,
+    padx=10, bg="#D92D20", fg="#111827", font=BUTTON_FONT,
     activebackground="#B42318", activeforeground="#111827",
     disabledforeground=DISABLED_FOREGROUND,
     state=tk.DISABLED,
 )
-abort_btn.pack(side=tk.LEFT, padx=(8, 0))
+abort_btn.pack(side=tk.LEFT)
 
 progress_frame = tk.Frame(top)
 progress_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
@@ -2286,37 +2308,40 @@ op_frame = tk.Frame(win)
 op_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
 add_btn = tk.Button(op_frame, text="新增行", command=active_tree_add_row,
-                    font=BUTTON_FONT,
+                    padx=15, font=BUTTON_FONT,
                     disabledforeground=DISABLED_FOREGROUND,
                     state=tk.DISABLED)
-add_btn.pack(side=tk.LEFT, padx=(0, 6))
+add_btn.pack(side=tk.LEFT, padx=(0, 15))
 insert_btn = tk.Button(op_frame, text="插入行", command=active_tree_insert_row,
-                       font=BUTTON_FONT,
+                       padx=15, font=BUTTON_FONT,
                        disabledforeground=DISABLED_FOREGROUND,
                        state=tk.DISABLED)
-insert_btn.pack(side=tk.LEFT, padx=(0, 6))
+insert_btn.pack(side=tk.LEFT, padx=(0, 15))
+copy_btn = tk.Button(op_frame, text="复制行", command=active_tree_copy_selected,
+                     padx=15, font=BUTTON_FONT,
+                     disabledforeground=DISABLED_FOREGROUND,
+                     state=tk.DISABLED)
+copy_btn.pack(side=tk.LEFT, padx=(0, 15))
+paste_btn = tk.Button(op_frame, text="粘贴行", command=active_tree_paste_row,
+                      padx=15, font=BUTTON_FONT,
+                      disabledforeground=DISABLED_FOREGROUND,
+                      state=tk.DISABLED)
+paste_btn.pack(side=tk.LEFT, padx=(0, 15))
 del_btn = tk.Button(op_frame, text="删除行", command=active_tree_delete_selected,
-                    font=BUTTON_FONT,
+                    padx=15, font=BUTTON_FONT,
                     disabledforeground=DISABLED_FOREGROUND,
                     state=tk.DISABLED)
-del_btn.pack(side=tk.LEFT, padx=(0, 6))
-continue_btn = tk.Button(
-    op_frame, text="继续查询原任务", command=continue_current_task,
-    bg="#D97706", fg="#111827", font=BUTTON_FONT,
-    disabledforeground=DISABLED_FOREGROUND,
-    state=tk.DISABLED,
-)
-continue_btn.pack(side=tk.LEFT, padx=(0, 6))
+del_btn.pack(side=tk.LEFT, padx=(0, 15))
 
 query_log_btn = tk.Button(
     op_frame, text="查询日志", command=open_log_window,
-    font=BUTTON_FONT,
+    padx=15, font=BUTTON_FONT,
     disabledforeground=DISABLED_FOREGROUND,
 )
-query_log_btn.pack(side=tk.LEFT, padx=(0, 6))
+query_log_btn.pack(side=tk.LEFT, padx=(0, 15))
 tk.Button(
     op_frame, text="新增产品", command=open_add_product_window,
-    bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+    padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
     activebackground="#155E75", activeforeground="#111827",
     disabledforeground=DISABLED_FOREGROUND,
 ).pack(side=tk.LEFT)
