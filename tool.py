@@ -223,12 +223,6 @@ class EditableTreeview(ttk.Treeview):
             if row_id in selected
         ]
 
-    def has_clipboard(self):
-        return bool(self._clipboard)
-
-    def has_copyable_selection(self):
-        return bool(self._selected_rows_in_order())
-
     def copy_selected(self):
         selected = self._selected_rows_in_order()
         if not selected:
@@ -881,8 +875,6 @@ def _build_scrolled_preview_tree(parent, columns, rows, preview_groups=None):
         style="Preview.Treeview",
         selectmode="extended",
     )
-    tree.bind("<<TreeviewSelect>>",
-              lambda _event: refresh_row_action_state())
     tree.tag_configure("new_row", background="#FFF3CD")
     tree.tag_configure("zebra_even", background="#FFFFFF")
     tree.tag_configure("zebra_odd", background="#EFF5F9")
@@ -1271,18 +1263,11 @@ def on_preview_tab_changed(_event=None):
 
 
 def refresh_row_action_state():
-    """按当前选中行与复制内容刷新插入/复制/粘贴按钮。"""
+    """按当前预览页签状态刷新插入行按钮。"""
     active = active_tree is not None
     active_info = _active_preview_file()
     editable = active and active_info is not None
     insert_btn.config(state=tk.NORMAL if editable else tk.DISABLED)
-    copy_btn.config(
-        state=tk.NORMAL if editable and active_tree.has_copyable_selection()
-        else tk.DISABLED
-    )
-    paste_btn.config(
-        state=tk.NORMAL if editable and active_tree.has_clipboard() else tk.DISABLED
-    )
 
 
 def refresh_export_state():
@@ -2301,50 +2286,40 @@ op_frame = tk.Frame(win)
 op_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
 add_btn = tk.Button(op_frame, text="新增行", command=active_tree_add_row,
-                    width=10, font=BUTTON_FONT,
+                    font=BUTTON_FONT,
                     disabledforeground=DISABLED_FOREGROUND,
                     state=tk.DISABLED)
-add_btn.pack(side=tk.LEFT, padx=(0, 8))
+add_btn.pack(side=tk.LEFT, padx=(0, 6))
 insert_btn = tk.Button(op_frame, text="插入行", command=active_tree_insert_row,
-                       width=10, font=BUTTON_FONT,
+                       font=BUTTON_FONT,
                        disabledforeground=DISABLED_FOREGROUND,
                        state=tk.DISABLED)
-insert_btn.pack(side=tk.LEFT, padx=(0, 8))
-copy_btn = tk.Button(op_frame, text="复制行", command=active_tree_copy_selected,
-                     width=10, font=BUTTON_FONT,
-                     disabledforeground=DISABLED_FOREGROUND,
-                     state=tk.DISABLED)
-copy_btn.pack(side=tk.LEFT, padx=(0, 8))
-paste_btn = tk.Button(op_frame, text="粘贴行", command=active_tree_paste_row,
-                      width=10, font=BUTTON_FONT,
-                      disabledforeground=DISABLED_FOREGROUND,
-                      state=tk.DISABLED)
-paste_btn.pack(side=tk.LEFT, padx=(0, 8))
+insert_btn.pack(side=tk.LEFT, padx=(0, 6))
 del_btn = tk.Button(op_frame, text="删除行", command=active_tree_delete_selected,
-                    width=10, font=BUTTON_FONT,
+                    font=BUTTON_FONT,
                     disabledforeground=DISABLED_FOREGROUND,
                     state=tk.DISABLED)
-del_btn.pack(side=tk.LEFT, padx=(0, 8))
+del_btn.pack(side=tk.LEFT, padx=(0, 6))
 continue_btn = tk.Button(
     op_frame, text="继续查询原任务", command=continue_current_task,
-    width=16, bg="#D97706", fg="#111827", font=BUTTON_FONT,
+    bg="#D97706", fg="#111827", font=BUTTON_FONT,
     disabledforeground=DISABLED_FOREGROUND,
     state=tk.DISABLED,
 )
-continue_btn.pack(side=tk.LEFT, padx=(10, 0))
+continue_btn.pack(side=tk.LEFT, padx=(0, 6))
 
 query_log_btn = tk.Button(
     op_frame, text="查询日志", command=open_log_window,
-    width=10, font=BUTTON_FONT,
+    font=BUTTON_FONT,
     disabledforeground=DISABLED_FOREGROUND,
 )
-query_log_btn.pack(side=tk.LEFT, padx=(8, 0))
+query_log_btn.pack(side=tk.LEFT, padx=(0, 6))
 tk.Button(
     op_frame, text="新增产品", command=open_add_product_window,
-    width=10, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+    bg="#0E7490", fg="#111827", font=BUTTON_FONT,
     activebackground="#155E75", activeforeground="#111827",
     disabledforeground=DISABLED_FOREGROUND,
-).pack(side=tk.LEFT, padx=(8, 0))
+).pack(side=tk.LEFT)
 
 win.after(200, poll_log_queue)
 
