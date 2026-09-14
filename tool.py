@@ -149,11 +149,15 @@ OSCAR_HEADER_DISPLAY_LABELS = {
 class EditableTreeview(ttk.Treeview):
     """支持双击编辑单元格、插入/新增/删除行以及整行复制粘贴的 Treeview。"""
 
+    UNDO_LIMIT = 20
+
     def __init__(self, master, on_change=None, **kwargs):
         super().__init__(master, **kwargs)
         self._entry = None
         self._bound_item = None
         self._bound_col = None
+        self._pending_edit_snapshot = None
+        self._undo_stack = []
         self._clipboard = []
         self._on_change = on_change
         self.bind("<Double-1>", self._start_edit)
@@ -161,6 +165,8 @@ class EditableTreeview(ttk.Treeview):
             self.bind(sequence, self._copy_shortcut)
         for sequence in ("<Control-v>", "<Command-v>"):
             self.bind(sequence, self._paste_shortcut)
+        for sequence in ("<Control-z>", "<Command-z>"):
+            self.bind(sequence, self._undo_shortcut)
 
     def _start_edit(self, event):
         if self.identify("region", event.x, event.y) != "cell":
@@ -176,6 +182,7 @@ class EditableTreeview(ttk.Treeview):
         if not bbox:
             return
         self._finish_edit()
+        self._pending_edit_snapshot = self._snapshot_tree()
         col_id = headers[col_index]
         entry = tk.Entry(self)
         entry.insert(0, self.set(row_id, col_id))
@@ -188,15 +195,25 @@ class EditableTreeview(ttk.Treeview):
         entry.bind("<Return>", self._finish_edit)
         entry.bind("<FocusOut>", self._finish_edit)
         entry.bind("<Escape>", self._cancel_edit)
+        for sequence in ("<Control-z>", "<Command-z>"):
+            entry.bind(sequence, self._cancel_edit)
 
     def _finish_edit(self, _event=None):
         if self._entry is not None:
-            self.set(self._bound_item, self._bound_col, self._entry.get())
+            new_value = self._entry.get()
+            old_value = self.set(self._bound_item, self._bound_col)
+            changed = new_value != old_value
+            if changed:
+                self._push_undo_snapshot(self._pending_edit_snapshot)
+                self.set(self._bound_item, self._bound_col, new_value)
             self._destroy_edit()
-            self._notify_change()
+            if changed:
+                self._notify_change()
 
     def _cancel_edit(self, _event=None):
         self._destroy_edit()
+        self.focus_set()
+        return "break"
 
     def _destroy_edit(self):
         if self._entry is not None:
@@ -204,6 +221,7 @@ class EditableTreeview(ttk.Treeview):
             self._entry = None
             self._bound_item = None
             self._bound_col = None
+        self._pending_edit_snapshot = None
 
     def _notify_change(self):
         if self._on_change is not None:
@@ -216,6 +234,86 @@ class EditableTreeview(ttk.Treeview):
     def _paste_shortcut(self, _event=None):
         active_tree_paste_row()
         return "break"
+
+    def _undo_shortcut(self, _event=None):
+        self.undo()
+        return "break"
+
+    def _snapshot_tree(self):
+        def snapshot_children(parent_id):
+            rows = []
+            for row_id in self.get_children(parent_id):
+                rows.append({
+                    "values": list(self.item(row_id, "values")),
+                    "tags": tuple(self.item(row_id, "tags")),
+                    "open": bool(self.item(row_id, "open")),
+                    "children": snapshot_children(row_id),
+                })
+            return rows
+
+        return {
+            "rows": snapshot_children(""),
+            "selection": [
+                self._item_path(row_id) for row_id in self.selection()
+            ],
+        }
+
+    def _item_path(self, row_id):
+        path = []
+        current = row_id
+        while current:
+            path.append(self.index(current))
+            current = self.parent(current)
+        return tuple(reversed(path))
+
+    def _push_undo_snapshot(self, snapshot):
+        if snapshot is None:
+            return
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            del self._undo_stack[0]
+
+    def _record_undo(self):
+        self._push_undo_snapshot(self._snapshot_tree())
+
+    def _restore_snapshot(self, snapshot):
+        for row_id in self.get_children(""):
+            self.delete(row_id)
+
+        restored_rows = {}
+
+        def restore_children(parent_id, parent_path, rows):
+            for index, row in enumerate(rows):
+                row_id = self.insert(
+                    parent_id,
+                    tk.END,
+                    values=row["values"],
+                    tags=row["tags"],
+                )
+                if row["open"]:
+                    self.item(row_id, open=True)
+                restored_rows[parent_path + (index,)] = row_id
+                restore_children(
+                    row_id, parent_path + (index,), row["children"]
+                )
+
+        restore_children("", (), snapshot["rows"])
+        selected = [
+            restored_rows[path]
+            for path in snapshot["selection"]
+            if path in restored_rows
+        ]
+        if selected:
+            self.selection_set(*selected)
+            self.see(selected[0])
+        self._renumber()
+
+    def undo(self):
+        if not self._undo_stack:
+            return False
+        self._restore_snapshot(self._undo_stack.pop())
+        self._notify_change()
+        return True
 
     def _is_summary_row(self, row_id):
         return "summary_row" in self.item(row_id, "tags")
@@ -280,6 +378,7 @@ class EditableTreeview(ttk.Treeview):
         else:
             parent_id = ""
             index = tk.END
+        self._record_undo()
         row_id = self.insert(
             parent_id, index, values=("",) * len(self["columns"]),
             tags=("new_row",)
@@ -309,6 +408,7 @@ class EditableTreeview(ttk.Treeview):
         else:
             parent_id = ""
             index = len(self.get_children())
+        self._record_undo()
         pasted = []
         for offset, values in enumerate(self._clipboard):
             row_id = self.insert(
@@ -326,6 +426,7 @@ class EditableTreeview(ttk.Treeview):
 
     def add_row(self):
         if self["columns"]:
+            self._record_undo()
             self.insert("", tk.END, values=("",) * len(self["columns"]),
                         tags=("new_row",))
             self._renumber()
@@ -334,14 +435,16 @@ class EditableTreeview(ttk.Treeview):
 
     def delete_selected(self):
         selected = self.selection()
+        if not selected:
+            return
+        self._record_undo()
         for row_id in selected:
             try:
                 self.delete(row_id)
             except tk.TclError:
                 pass
         self._renumber()
-        if selected:
-            self._notify_change()
+        self._notify_change()
 
     def _renumber(self):
         for index, row_id in enumerate(self.get_children(), 1):
@@ -1462,6 +1565,7 @@ def active_tree_add_row():
     """在当前预览页签新增一行明细并刷新导出状态。"""
     if active_tree:
         active_tree.add_row()
+        active_tree.focus_set()
         refresh_export_state()
 
 
@@ -1469,6 +1573,7 @@ def active_tree_delete_selected():
     """在当前预览页签删除选中行并刷新导出状态。"""
     if active_tree:
         active_tree.delete_selected()
+        active_tree.focus_set()
         refresh_export_state()
 
 
@@ -1476,6 +1581,7 @@ def active_tree_insert_row():
     """在当前预览页签选中行下方插入空白行并刷新操作状态。"""
     if active_tree:
         active_tree.insert_row_after_selection()
+        active_tree.focus_set()
         refresh_export_state()
 
 
@@ -1490,6 +1596,7 @@ def active_tree_paste_row():
     """把当前预览页签复制的整行粘贴为新明细行并刷新操作状态。"""
     if active_tree:
         active_tree.paste_clipboard()
+        active_tree.focus_set()
         refresh_export_state()
 
 
