@@ -20,6 +20,12 @@ from excel_export import (
 )
 from feishu_client import get_tenant_access_token, send_to_bitable_repeated
 from logging_utils import log_queue, print_log
+from medical_device_client import (
+    MEDICAL_DEVICE_WARNING,
+    load_medical_device_skus,
+    refresh_or_load_medical_device_skus,
+    row_contains_medical_device_sku,
+)
 from mock_data import generate_mock_data
 from ocr_client import (
     OCRAborted,
@@ -78,6 +84,13 @@ product_send_button = None
 product_response_text = None
 product_response_status = None
 wms_window_response_status = None
+medical_device_skus = frozenset()
+medical_device_sku_thread = None
+medical_device_sku_refresh_pending = False
+medical_device_sku_refresh_lock = threading.Lock()
+
+MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
+MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
 
 FONT_CANDIDATES = (
     "Noto Sans CJK SC",
@@ -136,12 +149,13 @@ OSCAR_HEADER_DISPLAY_LABELS = {
 class EditableTreeview(ttk.Treeview):
     """支持双击编辑单元格、插入/新增/删除行以及整行复制粘贴的 Treeview。"""
 
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, on_change=None, **kwargs):
         super().__init__(master, **kwargs)
         self._entry = None
         self._bound_item = None
         self._bound_col = None
         self._clipboard = []
+        self._on_change = on_change
         self.bind("<Double-1>", self._start_edit)
         for sequence in ("<Control-c>", "<Command-c>"):
             self.bind(sequence, self._copy_shortcut)
@@ -179,6 +193,7 @@ class EditableTreeview(ttk.Treeview):
         if self._entry is not None:
             self.set(self._bound_item, self._bound_col, self._entry.get())
             self._destroy_edit()
+            self._notify_change()
 
     def _cancel_edit(self, _event=None):
         self._destroy_edit()
@@ -189,6 +204,10 @@ class EditableTreeview(ttk.Treeview):
             self._entry = None
             self._bound_item = None
             self._bound_col = None
+
+    def _notify_change(self):
+        if self._on_change is not None:
+            self._on_change()
 
     def _copy_shortcut(self, _event=None):
         active_tree_copy_selected()
@@ -270,6 +289,7 @@ class EditableTreeview(ttk.Treeview):
         self._renumber()
         self.selection_set(row_id)
         self.see(row_id)
+        self._notify_change()
         return row_id
 
     def paste_clipboard(self):
@@ -301,6 +321,7 @@ class EditableTreeview(ttk.Treeview):
         self._renumber()
         self.selection_set(*pasted)
         self.see(pasted[-1])
+        self._notify_change()
         return True
 
     def add_row(self):
@@ -309,14 +330,18 @@ class EditableTreeview(ttk.Treeview):
                         tags=("new_row",))
             self._renumber()
             self.see(self.get_children()[-1])
+            self._notify_change()
 
     def delete_selected(self):
-        for row_id in self.selection():
+        selected = self.selection()
+        for row_id in selected:
             try:
                 self.delete(row_id)
             except tk.TclError:
                 pass
         self._renumber()
+        if selected:
+            self._notify_change()
 
     def _renumber(self):
         for index, row_id in enumerate(self.get_children(), 1):
@@ -873,13 +898,110 @@ def _detail_rows_from_full_rows(rows, split_groups, full_headers, detail_fields)
     return detail_rows, preview_groups
 
 
-def _build_scrolled_preview_tree(parent, columns, rows, preview_groups=None):
+def _refresh_file_medical_device_display(
+    file_result, select_text, detail_fields
+):
+    """按当前明细重新判断医疗器械提示，并只标红命中的实际明细行。"""
+    tree = file_result.get("tree")
+    warning_label = file_result.get("medical_warning_label")
+    if tree is None or warning_label is None:
+        return
+    try:
+        if not tree.winfo_exists() or not warning_label.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    has_medical_device = False
+    for parent_id in tree.get_children():
+        row_ids = (
+            tree.get_children(parent_id)
+            if "summary_row" in tree.item(parent_id, "tags")
+            else (parent_id,)
+        )
+        for row_id in row_ids:
+            tags = [
+                tag for tag in tree.item(row_id, "tags")
+                if tag != MEDICAL_DEVICE_ROW_TAG
+            ]
+            row = [
+                tree.set(row_id, column) for column in tree["columns"]
+            ]
+            if row_contains_medical_device_sku(
+                row, detail_fields, select_text, medical_device_skus
+            ):
+                has_medical_device = True
+                tags.append(MEDICAL_DEVICE_ROW_TAG)
+            tree.item(row_id, tags=tags)
+
+    if has_medical_device:
+        warning_label.config(text=MEDICAL_DEVICE_WARNING)
+        if not warning_label.winfo_manager():
+            warning_label.place(relx=0.5, rely=0.5, anchor="center")
+    else:
+        warning_label.place_forget()
+
+
+def _apply_medical_device_skus(skus):
+    """更新内存 SKU 集合并回刷当前所有预览页签。"""
+    global medical_device_skus
+    medical_device_skus = frozenset(skus)
+    if not preview_files or not preview_select_text:
+        return
+    _, detail_fields = get_preview_layout(preview_select_text)
+    for file_result in preview_files:
+        _refresh_file_medical_device_display(
+            file_result, preview_select_text, detail_fields
+        )
+
+
+def _medical_device_sku_refresh_worker(reason):
+    """后台查询医疗器械 SKU，成功覆盖缓存，失败时回传上次缓存。"""
+    print_log(f"正在刷新医疗器械 SKU：{reason}")
+    with medical_device_sku_refresh_lock:
+        skus, source, error = refresh_or_load_medical_device_skus()
+    if source == "network":
+        print_log(f"医疗器械 SKU 已更新：{len(skus)} 条")
+        error_text = ""
+    elif error is not None:
+        print_log(f"医疗器械 SKU 查询失败，使用{source}数据：{error}")
+        error_text = str(error)
+    else:
+        error_text = ""
+    ui_message_queue.put(
+        ("medical_device_skus", skus, source, error_text)
+    )
+
+
+def _start_medical_device_sku_refresh(reason):
+    """启动不阻塞 OCR 的医疗器械 SKU 后台刷新。"""
+    global medical_device_sku_thread, medical_device_sku_refresh_pending
+    if (
+        medical_device_sku_thread is not None
+        and medical_device_sku_thread.is_alive()
+    ):
+        medical_device_sku_refresh_pending = True
+        return
+    medical_device_sku_refresh_pending = False
+    medical_device_sku_thread = threading.Thread(
+        target=_medical_device_sku_refresh_worker,
+        args=(reason,),
+        daemon=True,
+    )
+    medical_device_sku_thread.start()
+    win.after(100, poll_ui_queue)
+
+
+def _build_scrolled_preview_tree(
+    parent, columns, rows, preview_groups=None, on_change=None
+):
     """创建带滚动条的明细预览表格，并返回其外层容器与 Treeview。"""
     frame = tk.Frame(parent)
     tree = EditableTreeview(
         frame,
         style="Preview.Treeview",
         selectmode="extended",
+        on_change=on_change,
     )
     tree.bind("<<TreeviewSelect>>",
               lambda _event: refresh_row_action_state())
@@ -897,6 +1019,10 @@ def _build_scrolled_preview_tree(parent, columns, rows, preview_groups=None):
         background="#FEF3C7",
         foreground="#334155",
         font=summary_font,
+    )
+    tree.tag_configure(
+        MEDICAL_DEVICE_ROW_TAG,
+        foreground=MEDICAL_DEVICE_WARNING_COLOR,
     )
 
     vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
@@ -1063,13 +1189,14 @@ def _build_file_tab(file_result, headers, header_fields, detail_fields,
         status_text += "；当前无明细数据"
     if file_result.get("message"):
         status_text += f"；{file_result['message']}"
+    status_frame = tk.Frame(tab)
+    status_frame.pack(fill=tk.X)
     status_label = tk.Label(
-        tab, text=status_text, anchor="w",
+        status_frame, text=status_text, anchor="w",
         fg=("#D97706" if file_result["status"] == "结果未生成"
             else "#B42318" if file_result["status"] == "失败" else "#111827")
     )
     status_label.pack(fill=tk.X, padx=8, pady=(0, 4))
-
     file_result["status_label"] = status_label
     hidden_fields = get_preview_hidden_fields(select_text)
     header_values = _header_values_from_rows(
@@ -1092,19 +1219,41 @@ def _build_file_tab(file_result, headers, header_fields, detail_fields,
     )
     header_panel.pack(fill=tk.X, padx=8, pady=(0, 4))
 
-    tk.Label(tab, text="明细", anchor="w",
-             font=SECTION_FONT).pack(fill=tk.X, padx=8, pady=(0, 2))
+    detail_title_row = tk.Frame(tab)
+    detail_title_row.pack(fill=tk.X, padx=8, pady=(0, 2))
+    tk.Label(detail_title_row, text="明细", anchor="w",
+             font=SECTION_FONT).pack(side=tk.LEFT)
+    medical_warning_label = tk.Label(
+        detail_title_row,
+        text=MEDICAL_DEVICE_WARNING,
+        anchor="center",
+        justify="center",
+        font=SECTION_FONT,
+        fg=MEDICAL_DEVICE_WARNING_COLOR,
+    )
+    file_result["medical_warning_label"] = medical_warning_label
     detail_rows, preview_groups = _detail_rows_from_full_rows(
         file_result.get("rows") or [], file_result.get("split_groups") or [],
         headers, detail_fields
     )
+
+    def refresh_medical_device_display():
+        _refresh_file_medical_device_display(
+            file_result, select_text, detail_fields
+        )
+
     detail_panel, detail_tree = _build_scrolled_preview_tree(
-        tab, detail_fields, detail_rows, preview_groups
+        tab,
+        detail_fields,
+        detail_rows,
+        preview_groups,
+        on_change=refresh_medical_device_display,
     )
     detail_panel.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
 
     file_result["tree"] = detail_tree
     file_result["tab"] = tab
+    refresh_medical_device_display()
     return detail_tree
 
 
@@ -1772,6 +1921,7 @@ def open_add_product_window(parent=None):
             )
             return
         payload = build_put_sku_payload(form_values)
+        medical_device = bool(form_values.get("medical_device"))
         product_send_active = True
         product_send_button.config(state=tk.DISABLED, text="发送中...")
         token = id(product_response_text)
@@ -1779,7 +1929,9 @@ def open_add_product_window(parent=None):
             token, "发送中...\n\n正在等待接口返回。", "sending"
         )
         product_thread = threading.Thread(
-            target=product_send_worker, args=(payload, token), daemon=True
+            target=product_send_worker,
+            args=(payload, token, medical_device),
+            daemon=True,
         )
         product_thread.start()
         refresh_export_state()
@@ -1807,7 +1959,7 @@ def open_add_product_window(parent=None):
     product_window.after(100, product_code_entry.focus_set)
 
 
-def product_send_worker(payload, token):
+def product_send_worker(payload, token, medical_device=False):
     """后台发送 putSKU 产品主数据报文并回传结果。"""
     print_log("正在发送WMS产品主数据报文...")
     try:
@@ -1820,12 +1972,24 @@ def product_send_worker(payload, token):
         else:
             result_text = f"发送失败：HTTP 状态或 returnFlag 不满足\n\n{text}"
         ui_message_queue.put(
-            ("product_send_result", token, success, result_text)
+            (
+                "product_send_result",
+                token,
+                success,
+                result_text,
+                medical_device,
+            )
         )
     except Exception as e:
         print_log(f"WMS产品接口发送失败: {e}")
         ui_message_queue.put(
-            ("product_send_result", token, False, f"发送失败：{e}")
+            (
+                "product_send_result",
+                token,
+                False,
+                f"发送失败：{e}",
+                medical_device,
+            )
         )
 
 
@@ -2155,8 +2319,11 @@ def poll_ui_queue():
             _refresh_file_status_label(info)
             on_preview_tab_changed()
             set_progress_state(100, "处理进度：续查未生成结果", "#D97706")
+        elif kind == "medical_device_skus":
+            skus, _source, _error_text = payload
+            _apply_medical_device_skus(skus)
         elif kind == "product_send_result":
-            token, success, text = payload
+            token, success, text, medical_device = payload
             _replace_product_response(
                 token, text, "success" if success else "failure"
             )
@@ -2170,6 +2337,8 @@ def poll_ui_queue():
                 except tk.TclError:
                     pass
             refresh_export_state()
+            if success and medical_device:
+                _start_medical_device_sku_refresh("新增医疗器械产品成功")
         elif kind == "wms_send_result":
             token, success, text = payload
             _replace_wms_response(
@@ -2186,11 +2355,21 @@ def poll_ui_queue():
                     pass
             refresh_export_state()
 
-    if any(
+    if medical_device_sku_refresh_pending and (
+        medical_device_sku_thread is None
+        or not medical_device_sku_thread.is_alive()
+    ):
+        _start_medical_device_sku_refresh("处理等待中的刷新请求")
+
+    if medical_device_sku_refresh_pending or any(
         thread is not None and thread.is_alive()
         for thread in (
-            worker_thread, export_thread, continue_thread,
-            wms_thread, product_thread,
+            worker_thread,
+            export_thread,
+            continue_thread,
+            wms_thread,
+            product_thread,
+            medical_device_sku_thread,
         )
     ):
         win.after(100, poll_ui_queue)
@@ -2349,6 +2528,8 @@ tk.Button(
 win.after(200, poll_log_queue)
 
 if __name__ == "__main__":
+    _apply_medical_device_skus(load_medical_device_skus())
+    _start_medical_device_sku_refresh("程序启动")
     if sys.platform == "win32":
         win.state("zoomed")
     elif sys.platform.startswith("linux"):
