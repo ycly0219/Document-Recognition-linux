@@ -22,9 +22,13 @@ from feishu_client import get_tenant_access_token, send_to_bitable_repeated
 from logging_utils import log_queue, print_log
 from medical_device_client import (
     MEDICAL_DEVICE_WARNING,
-    load_medical_device_skus,
-    refresh_or_load_medical_device_skus,
+    filter_medical_device_catalog_rows,
+    load_medical_device_catalog,
+    medical_device_catalog_display_rows,
+    medical_device_catalog_skus,
+    refresh_or_load_medical_device_catalog,
     row_contains_medical_device_sku,
+    sort_medical_device_catalog_rows,
 )
 from mock_data import generate_mock_data
 from ocr_client import (
@@ -84,13 +88,31 @@ product_send_button = None
 product_response_text = None
 product_response_status = None
 wms_window_response_status = None
+medical_device_catalog = []
 medical_device_skus = frozenset()
-medical_device_sku_thread = None
-medical_device_sku_refresh_pending = False
-medical_device_sku_refresh_lock = threading.Lock()
+medical_device_catalog_thread = None
+medical_device_catalog_refresh_pending = False
+medical_device_catalog_refresh_lock = threading.Lock()
+medical_device_catalog_refresh_active = False
+medical_device_catalog_refresh_status = "尚未查询医疗器械信息"
+medical_device_window = None
+medical_device_tree = None
+medical_device_search_var = None
+medical_device_status_label = None
+medical_device_refresh_button = None
+medical_device_sort_column = None
+medical_device_sort_stage = 0
 
 MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
 MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
+MEDICAL_DEVICE_COLUMNS = (
+    "产品编码",
+    "是否序列号控制",
+    "是否批次控制",
+    "是否效期控制",
+    "是否危险品",
+    "是否球管",
+)
 
 FONT_CANDIDATES = (
     "Noto Sans CJK SC",
@@ -1045,10 +1067,249 @@ def _refresh_file_medical_device_display(
         warning_label.place_forget()
 
 
-def _apply_medical_device_skus(skus):
-    """更新内存 SKU 集合并回刷当前所有预览页签。"""
-    global medical_device_skus
-    medical_device_skus = frozenset(skus)
+def _set_medical_device_refresh_state(active, status):
+    """同步医疗器械窗口的查询状态和重新查询按钮。"""
+    global medical_device_catalog_refresh_active
+    global medical_device_catalog_refresh_status
+    medical_device_catalog_refresh_active = active
+    medical_device_catalog_refresh_status = status
+    if medical_device_refresh_button is not None:
+        try:
+            if medical_device_refresh_button.winfo_exists():
+                medical_device_refresh_button.config(
+                    state=tk.DISABLED if active else tk.NORMAL,
+                    text="查询中..." if active else "重新查询",
+                )
+        except tk.TclError:
+            pass
+    if medical_device_status_label is not None:
+        try:
+            if medical_device_status_label.winfo_exists():
+                medical_device_status_label.config(text=status)
+        except tk.TclError:
+            pass
+
+
+def _refresh_medical_device_window():
+    """按当前搜索和排序状态刷新医疗器械列表。"""
+    if medical_device_tree is None:
+        return
+    try:
+        if not medical_device_tree.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    rows = medical_device_catalog_display_rows(medical_device_catalog)
+    search_text = (
+        medical_device_search_var.get()
+        if medical_device_search_var is not None else ""
+    )
+    rows = filter_medical_device_catalog_rows(rows, search_text)
+    if medical_device_sort_column is not None:
+        if medical_device_sort_stage == 1:
+            rows = sort_medical_device_catalog_rows(
+                rows, medical_device_sort_column
+            )
+        elif medical_device_sort_stage == 2:
+            rows = sort_medical_device_catalog_rows(
+                rows, medical_device_sort_column, descending=True
+            )
+
+    medical_device_tree.delete(*medical_device_tree.get_children())
+    for row in rows:
+        medical_device_tree.insert("", tk.END, values=row)
+
+    column_ids = medical_device_tree["columns"]
+    for index, title in enumerate(MEDICAL_DEVICE_COLUMNS):
+        heading = title
+        if index == medical_device_sort_column:
+            heading += " ↑" if medical_device_sort_stage == 1 else " ↓"
+        medical_device_tree.heading(column_ids[index], text=heading)
+
+
+def _on_medical_device_search_changed(*_args):
+    """SKU 搜索框变化时立即过滤列表。"""
+    _refresh_medical_device_window()
+
+
+def _on_medical_device_heading_clicked(column_index):
+    """按升序、降序、原始顺序循环切换指定列的排序。"""
+    global medical_device_sort_column, medical_device_sort_stage
+    if medical_device_sort_column != column_index:
+        medical_device_sort_column = column_index
+        medical_device_sort_stage = 1
+    else:
+        medical_device_sort_stage += 1
+        if medical_device_sort_stage > 2:
+            medical_device_sort_column = None
+            medical_device_sort_stage = 0
+    _refresh_medical_device_window()
+
+
+def close_medical_device_window():
+    """关闭医疗器械窗口并允许重新打开。"""
+    global medical_device_window, medical_device_tree
+    global medical_device_search_var, medical_device_status_label
+    global medical_device_refresh_button, medical_device_sort_column
+    global medical_device_sort_stage
+    if medical_device_window is not None:
+        try:
+            medical_device_window.destroy()
+        except tk.TclError:
+            pass
+    medical_device_window = None
+    medical_device_tree = None
+    medical_device_search_var = None
+    medical_device_status_label = None
+    medical_device_refresh_button = None
+    medical_device_sort_column = None
+    medical_device_sort_stage = 0
+
+
+def open_medical_device_window():
+    """打开或聚焦非模态医疗器械目录窗口。"""
+    global medical_device_window, medical_device_tree
+    global medical_device_search_var, medical_device_status_label
+    global medical_device_refresh_button
+    if medical_device_window is not None:
+        try:
+            if medical_device_window.winfo_exists():
+                medical_device_window.deiconify()
+                medical_device_window.lift()
+                medical_device_window.focus_force()
+                return
+        except tk.TclError:
+            medical_device_window = None
+            medical_device_tree = None
+
+    width, height = 1000, 620
+    win.update_idletasks()
+    parent_x = win.winfo_rootx()
+    parent_y = win.winfo_rooty()
+    parent_width = win.winfo_width()
+    parent_height = win.winfo_height()
+    x = parent_x + max((parent_width - width) // 2, 0)
+    y = parent_y + max((parent_height - height) // 2, 0)
+
+    medical_device_window = tk.Toplevel(win)
+    medical_device_window.title("查询医疗器械")
+    medical_device_window.geometry(f"{width}x{height}+{x}+{y}")
+    medical_device_window.minsize(760, 420)
+    medical_device_window.transient(win)
+    medical_device_window.protocol(
+        "WM_DELETE_WINDOW", close_medical_device_window
+    )
+
+    body = tk.Frame(medical_device_window)
+    body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    search_frame = tk.Frame(body)
+    search_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(
+        search_frame, text="SKU 搜索", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    medical_device_search_var = tk.StringVar()
+    search_entry = tk.Entry(
+        search_frame, textvariable=medical_device_search_var,
+        font=BODY_FONT,
+    )
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    medical_device_search_var.trace_add(
+        "write", _on_medical_device_search_changed
+    )
+
+    footer = tk.Frame(body)
+    footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+    medical_device_status_label = tk.Label(
+        footer,
+        text=medical_device_catalog_refresh_status,
+        font=BODY_FONT,
+        anchor="w",
+        fg="#475569",
+    )
+    medical_device_status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    tk.Button(
+        footer, text="关闭", command=close_medical_device_window,
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
+    tk.Button(
+        footer, text="新增产品", command=open_add_product_window,
+        padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+        activebackground="#155E75", activeforeground="#111827",
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT, padx=(0, 15))
+    medical_device_refresh_button = tk.Button(
+        footer, text="重新查询",
+        command=lambda: _start_medical_device_catalog_refresh("手动查询"),
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    medical_device_refresh_button.pack(side=tk.RIGHT, padx=(0, 15))
+
+    table_frame = tk.Frame(body)
+    table_frame.pack(fill=tk.BOTH, expand=True)
+    column_ids = tuple(
+        f"medical_device_column_{index}"
+        for index in range(len(MEDICAL_DEVICE_COLUMNS))
+    )
+    medical_device_tree = ttk.Treeview(
+        table_frame,
+        columns=column_ids,
+        show="headings",
+        selectmode="browse",
+        style="Preview.Treeview",
+    )
+    vertical_scrollbar = ttk.Scrollbar(
+        table_frame, orient="vertical", command=medical_device_tree.yview
+    )
+    horizontal_scrollbar = ttk.Scrollbar(
+        table_frame, orient="horizontal", command=medical_device_tree.xview
+    )
+    medical_device_tree.configure(
+        yscrollcommand=vertical_scrollbar.set,
+        xscrollcommand=horizontal_scrollbar.set,
+    )
+    medical_device_tree.grid(row=0, column=0, sticky="nsew")
+    vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+    horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+    table_frame.rowconfigure(0, weight=1)
+    table_frame.columnconfigure(0, weight=1)
+
+    for index, title in enumerate(MEDICAL_DEVICE_COLUMNS):
+        width = 170 if index == 0 else 130
+        medical_device_tree.heading(
+            column_ids[index],
+            text=title,
+            anchor="center",
+            command=lambda column_index=index:
+                _on_medical_device_heading_clicked(column_index),
+        )
+        medical_device_tree.column(
+            column_ids[index],
+            width=width,
+            minwidth=110,
+            stretch=True,
+            anchor="center",
+        )
+
+    _set_medical_device_refresh_state(
+        medical_device_catalog_refresh_active,
+        medical_device_catalog_refresh_status,
+    )
+    _refresh_medical_device_window()
+    search_entry.focus_set()
+
+
+def _apply_medical_device_catalog(catalog):
+    """更新内存 catalog、派生 SKU 集合并回刷相关界面。"""
+    global medical_device_catalog, medical_device_skus
+    medical_device_catalog = [dict(record) for record in catalog]
+    medical_device_skus = frozenset(
+        medical_device_catalog_skus(medical_device_catalog)
+    )
+    _refresh_medical_device_window()
     if not preview_files or not preview_select_text:
         return
     _, detail_fields = get_preview_layout(preview_select_text)
@@ -1058,40 +1319,44 @@ def _apply_medical_device_skus(skus):
         )
 
 
-def _medical_device_sku_refresh_worker(reason):
-    """后台查询医疗器械 SKU，成功覆盖缓存，失败时回传上次缓存。"""
-    print_log(f"正在刷新医疗器械 SKU：{reason}")
-    with medical_device_sku_refresh_lock:
-        skus, source, error = refresh_or_load_medical_device_skus()
+def _medical_device_catalog_refresh_worker(reason):
+    """后台查询医疗器械目录，成功覆盖缓存，失败时回传上次缓存。"""
+    print_log(f"正在刷新医疗器械目录：{reason}")
+    with medical_device_catalog_refresh_lock:
+        catalog, source, error = refresh_or_load_medical_device_catalog()
     if source == "network":
-        print_log(f"医疗器械 SKU 已更新：{len(skus)} 条")
+        print_log(f"医疗器械目录已更新：{len(catalog)} 条")
         error_text = ""
     elif error is not None:
-        print_log(f"医疗器械 SKU 查询失败，使用{source}数据：{error}")
+        print_log(f"医疗器械目录查询失败，使用{source}数据：{error}")
         error_text = str(error)
     else:
         error_text = ""
     ui_message_queue.put(
-        ("medical_device_skus", skus, source, error_text)
+        ("medical_device_catalog", catalog, source, error_text)
     )
 
 
-def _start_medical_device_sku_refresh(reason):
-    """启动不阻塞 OCR 的医疗器械 SKU 后台刷新。"""
-    global medical_device_sku_thread, medical_device_sku_refresh_pending
+def _start_medical_device_catalog_refresh(reason):
+    """启动不阻塞 OCR 的医疗器械目录后台刷新。"""
+    global medical_device_catalog_thread
+    global medical_device_catalog_refresh_pending
     if (
-        medical_device_sku_thread is not None
-        and medical_device_sku_thread.is_alive()
+        medical_device_catalog_thread is not None
+        and medical_device_catalog_thread.is_alive()
     ):
-        medical_device_sku_refresh_pending = True
-        return
-    medical_device_sku_refresh_pending = False
-    medical_device_sku_thread = threading.Thread(
-        target=_medical_device_sku_refresh_worker,
-        args=(reason,),
-        daemon=True,
+        medical_device_catalog_refresh_pending = True
+    else:
+        medical_device_catalog_refresh_pending = False
+        medical_device_catalog_thread = threading.Thread(
+            target=_medical_device_catalog_refresh_worker,
+            args=(reason,),
+            daemon=True,
+        )
+        medical_device_catalog_thread.start()
+    _set_medical_device_refresh_state(
+        True, "正在查询医疗器械信息..."
     )
-    medical_device_sku_thread.start()
     win.after(100, poll_ui_queue)
 
 
@@ -2373,6 +2638,7 @@ def update_progress(done, total):
 def poll_ui_queue():
     """主线程轮询处理结果消息，并驱动界面状态更新。"""
     global continue_query_active, wms_send_active, product_send_active
+    global medical_device_catalog_refresh_active
     flush_log()
     while True:
         try:
@@ -2426,9 +2692,21 @@ def poll_ui_queue():
             _refresh_file_status_label(info)
             on_preview_tab_changed()
             set_progress_state(100, "处理进度：续查未生成结果", "#D97706")
-        elif kind == "medical_device_skus":
-            skus, _source, _error_text = payload
-            _apply_medical_device_skus(skus)
+        elif kind == "medical_device_catalog":
+            catalog, source, error_text = payload
+            medical_device_catalog_refresh_active = False
+            if source == "network":
+                _apply_medical_device_catalog(catalog)
+                if catalog:
+                    status = f"查询成功，共 {len(catalog)} 条产品信息"
+                else:
+                    status = "查询成功，未返回产品信息"
+            else:
+                status = (
+                    "查询失败，已保留当前列表"
+                    + (f"：{error_text}" if error_text else "")
+                )
+            _set_medical_device_refresh_state(False, status)
         elif kind == "product_send_result":
             token, success, text, medical_device = payload
             _replace_product_response(
@@ -2445,7 +2723,9 @@ def poll_ui_queue():
                     pass
             refresh_export_state()
             if success and medical_device:
-                _start_medical_device_sku_refresh("新增医疗器械产品成功")
+                _start_medical_device_catalog_refresh(
+                    "新增医疗器械产品成功"
+                )
         elif kind == "wms_send_result":
             token, success, text = payload
             _replace_wms_response(
@@ -2462,13 +2742,13 @@ def poll_ui_queue():
                     pass
             refresh_export_state()
 
-    if medical_device_sku_refresh_pending and (
-        medical_device_sku_thread is None
-        or not medical_device_sku_thread.is_alive()
+    if medical_device_catalog_refresh_pending and (
+        medical_device_catalog_thread is None
+        or not medical_device_catalog_thread.is_alive()
     ):
-        _start_medical_device_sku_refresh("处理等待中的刷新请求")
+        _start_medical_device_catalog_refresh("处理等待中的刷新请求")
 
-    if medical_device_sku_refresh_pending or any(
+    if medical_device_catalog_refresh_pending or any(
         thread is not None and thread.is_alive()
         for thread in (
             worker_thread,
@@ -2476,7 +2756,7 @@ def poll_ui_queue():
             continue_thread,
             wms_thread,
             product_thread,
-            medical_device_sku_thread,
+            medical_device_catalog_thread,
         )
     ):
         win.after(100, poll_ui_queue)
@@ -2626,6 +2906,11 @@ query_log_btn = tk.Button(
 )
 query_log_btn.pack(side=tk.LEFT, padx=(0, 15))
 tk.Button(
+    op_frame, text="查询医疗器械", command=open_medical_device_window,
+    padx=15, font=BUTTON_FONT,
+    disabledforeground=DISABLED_FOREGROUND,
+).pack(side=tk.LEFT, padx=(0, 15))
+tk.Button(
     op_frame, text="新增产品", command=open_add_product_window,
     padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
     activebackground="#155E75", activeforeground="#111827",
@@ -2635,8 +2920,8 @@ tk.Button(
 win.after(200, poll_log_queue)
 
 if __name__ == "__main__":
-    _apply_medical_device_skus(load_medical_device_skus())
-    _start_medical_device_sku_refresh("程序启动")
+    _apply_medical_device_catalog(load_medical_device_catalog())
+    _start_medical_device_catalog_refresh("程序启动")
     if sys.platform == "win32":
         win.state("zoomed")
     elif sys.platform.startswith("linux"):
