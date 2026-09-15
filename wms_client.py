@@ -160,7 +160,7 @@ def _build_oracle_put_original_sales_order_payload(header_values, detail_rows):
     header = {
         "warehouseId": WMS_WAREHOUSE_ID,
         "customerId": WMS_CUSTOMER_ID,
-        "consigneeId": "CONSIGNEEID",
+        "consigneeId": _text(header_values.get("客商编码")) or "CONSIGNEEID",
         "consigneeName": CONSIGNEE_NAME,
     }
     _optional_item(
@@ -239,7 +239,7 @@ def _build_oscar_put_original_sales_order_payload(header_values, detail_rows):
     header = {
         "warehouseId": WMS_WAREHOUSE_ID,
         "customerId": WMS_CUSTOMER_ID,
-        "consigneeId": "CONSIGNEEID",
+        "consigneeId": _text(header_values.get("客商编码")) or "CONSIGNEEID",
     }
     _optional_item(
         header,

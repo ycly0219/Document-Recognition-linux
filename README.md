@@ -7,26 +7,30 @@
 - 支持三种单据模板：`GE-ORACLE拣货单`、`GE-OSCAR拣货单`、`GE-发票单`
 - 三种单据的单据头均提供必填 `订单类型` 下拉框，标题红色加粗；`GE-ORACLE拣货单` 与 `GE-OSCAR拣货单` 默认空并可选 9 项，`GE-发票单` 沿用现有 3 项且默认 `国外入库`
 - 点击「确认并导出」前会校验所有有明细文件的 `订单类型`：缺失时提示具体文件名并停止，不再继续弹出导出目录
+- `GE-ORACLE拣货单` 与 `GE-OSCAR拣货单` 在 `订单类型` 后新增 `客商编码`；仅在任一明细命中医疗器械 SKU 时可编辑并必填，未命中时禁用并显示 `CONSIGNEEID`
+- `客商编码` 仅支持人工填写，OCR 不识别也不自动回填；每个页签独立保留手工值，医疗器械命中状态变化时恢复已保存值，目录刷新会同步重算所有已打开页签
+- 导出和接口发送前会校验医疗器械单据的 `客商编码`：去除首尾空格后为空时阻止操作，导出按文件名提示 `以下文件请先填写客商编码：`
 - `GE-ORACLE拣货单` 原始 `Item Details` 不再导出，改为提取 `LPN`、`Serial`、`Lot`、`COO` 四列；`LPN` 必有值，其余缺失时为空
 - `GE-ORACLE拣货单` 的 `Item Details` 遇到 `UN Number:` 后忽略之后内容，不再继续解析，也不导出 UN Number
-- `GE-ORACLE拣货单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`Order Number`、`OrderType`、`Shipment Priority`、`Service Level`、`FE SSO`、`FE Name`、`SHIP TO NO`、`Ship To Address`、`Shipping Instruction`、`Special Instruction`、`Customer Name`、`Customer Number`、`System Id`、`Pick From Subinv`、`Customer PO`、`Delivery`、`Pick Slip Print Date` 顺序；其中 `Ordered Date`、`Ship Method` 仅从 OCR 完整行保留，预览不展示且不可编辑，Excel 导出和 WMS 报文仍正常使用；Details 按 `Task Id`、`Item Number`、`Qty`、`LPN`、`Serial`、`Lot`、`COO`、`Pick From Locator`、`Org` 顺序
+- `GE-ORACLE拣货单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`客商编码`、`Pick Slip Print Date`、`Order Number`、`OrderType`、`Shipment Priority`、`Service Level`、`FE SSO`、`FE Name`、`SHIP TO NO`、`Ship To Address`、`Shipping Instruction`、`Special Instruction`、`Customer Name`、`Customer Number`、`System Id`、`Pick From Subinv`、`Customer PO`、`Delivery` 顺序；其中 `Ordered Date`、`Ship Method` 仅从 OCR 完整行保留，预览不展示且不可编辑，Excel 导出和 WMS 报文仍正常使用；Details 按 `Task Id`、`Item Number`、`Qty`、`LPN`、`Serial`、`Lot`、`COO`、`Pick From Locator`、`Org` 顺序
 - `GE-ORACLE拣货单` Excel `C` 列改为写所选 `订单类型` 对应的 `GNCK_*`/`GWCK_*` 代码，不再固定写 `JYCK`；原 OCR `OrderType` 字段保留并继续写 Excel `L` 列
 - `GE-ORACLE拣货单` Excel 导出按 `DOC_SALESORDER_HEADER.xlsx` 的销售订单表头模板生成，仅保留模板 Sheet，按模板第 3 行映射写入固定值与识别字段
 - `GE-ORACLE拣货单` Excel 导出时 `Pick Slip Print Date` / `Ordered Date` 支持三字母缩写与完整英文月份名（如 `APR` / `APRIL`）及 2 位/4 位年份转换
 - `GE-ORACLE拣货单` Excel 导出的 `货物来源` 固定写入 `ORACLE`，`参考编号3` 取识别字段 `System Id`，`质量状态` 按 `Pick From Subinv` 后缀规则写入 `GOOD`/`BAD`
 - `GE-ORACLE拣货单` 新增 `SHIP TO NO` 识别字段，预览展示在 `Ship To Address` 前，Excel 写入当前导出模板 `Y` 列（`udf01`），模板字段定义保持不变
-- `GE-OSCAR拣货单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`服务申请号`、`SR编号`、`时效`、`客户/供应商`、`收货人`、`收货地址`、`收货人电话`、`申请说明`、`SSO`、`姓名`、`客户设备id` 顺序；Details 按 `物料编号`、`数量`、`序列号`、`货位`、`仓库`、`状态`、`跟踪号` 顺序
+- `GE-OSCAR拣货单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`客商编码`、`服务申请号`、`SR编号`、`时效`、`客户/供应商`、`收货人`、`收货地址`、`收货人电话`、`申请说明`、`SSO`、`姓名`、`客户设备id` 顺序；Details 按 `物料编号`、`数量`、`序列号`、`货位`、`仓库`、`状态`、`跟踪号` 顺序
 - `GE-OSCAR拣货单` Excel `C` 列与 `GE-ORACLE拣货单` 一致，写所选订单类型对应的 `GNCK_*`/`GWCK_*` 代码，不再固定写 `JYCK`
-- `GE-OSCAR拣货单` Excel 导出按 `DOC_SALESORDER_HEADER_1.xlsx` 的销售订单表头模板生成；模板 Z 右侧新增 AA/AB/AC 三列，分别写入 `供应商`、`收货人`、`收货人电话` 作为 `收货人名称/收货联系人/收货人电话1`，原 V/W/X（`hedi13/14/15`）不再写入数据，收货地址与明细列整体右移 3 列；状态为“好件”时写入 `GOOD`，其余状态留空；OCR 姓名写入 R 列（`hedi07`）
+- `GE-OSCAR拣货单` Excel 导出按 `DOC_SALESORDER_HEADER_1.xlsx` 的销售订单表头模板生成；模板 Z 写入 `客商编码`，命中医疗器械时写人工值，未命中时回退 `CONSIGNEEID`；模板 Z 右侧新增 AA/AB/AC 三列，分别写入 `供应商`、`收货人`、`收货人电话` 作为 `收货人名称/收货联系人/收货人电话1`，原 V/W/X（`hedi13/14/15`）不再写入数据，收货地址与明细列整体右移 3 列；状态为“好件”时写入 `GOOD`，其余状态留空；OCR 姓名写入 R 列（`hedi07`）
 - `GE-OSCAR拣货单` 明细序列号为 `N/A` 或空时，Excel 导出与接口发送均按空处理，预览保留 OCR 原文
 - `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 解析 OCR 收货地址时将连续空白（含换行）折为单个空格并去除首尾空白；预览、Excel 导出和 WMS 报文均使用清洗后的地址，人工修改后的地址保留原样
+- `GE-ORACLE拣货单` Excel `V` 列复用为 `客商编码`：命中医疗器械时写去除首尾空格后的人工值，未命中或空值时回退 `CONSIGNEEID`；不新增 Excel 物理列
 - `GE-发票单` 支持新增 `COUNTRY OF ORIGIN` 字段，识别后同步展示在预览表格并写入 Excel
 - `GE-发票单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`运单号`、`INVOICE NO`、`DATE`、`DELIVERY`、`CARRIER`、`HAWB` 顺序；Details 按 `ITEM NUMBER`、`QTY`、`LPN Number`、`Serial Number`、`LOT Number`、`Expiration Date`、`COUNTRY OF ORIGIN`、`SALES ORDER NO`、`CUSTOMER PO` 顺序
 - `GE-发票单` 单据头新增 `运单号` 文本框，位于 `订单类型` 右侧，与 `订单类型` 一样红色加粗且必填；OCR 不识别该字段，仅手工填写，也不自动复用 `HAWB`；Excel 导出写入 `G` 列，接口发送时放入 `putPurchaseOrder` 头部 `poReferenceA`
 - `GE-发票单` 单据头新增 `订单类型` 下拉框，默认“国外入库”，可选“国内采购入库”“国内外维修入库”，标题红色加粗且必填；Excel `B` 列按选择写入 `OSI`、`POIN` 或 `REPAIRIN`，不再固定为 `OSI`
 - `GE-发票单` Excel 导出时仅订单类型为“国外入库”（`OSI`）的 `AA` 列固定写 `ORACLE`，`POIN`/`REPAIRIN` 留空
 - 预览页签顶部只显示一组单据头，并按多列可编辑表单展示，不再横向平铺；单据头修改同步到所有明细行，新增明细行自动带当前单据头，Excel 导出仍使用原有完整行映射
-- 单据头预览区使用多列 `Label + Entry/Text` 表单，其中 `GE-OSCAR拣货单` 预览单据头 `收货地址`、`GE-ORACLE拣货单` 预览单据头 `Ship To Address` 均为两行可换行文本并跨两列展示，`GE-ORACLE拣货单` 预览单据头 `Shipping Instruction` 跨两列展示但保持单行输入框；跨两列字段所在行 4 个字段，其他行仍为 5 个字段；字段标签字号已调大一号；明细表格在预览区宽度有空余时自动撑满列宽，字段过多时仍保留横向滚动
+- 单据头预览区使用多列 `Label + Entry/Text` 表单，其中 `GE-OSCAR拣货单` 预览单据头 `收货地址`、`GE-ORACLE拣货单` 预览单据头 `Ship To Address` 均为两行可换行文本并跨两列展示；`Shipping Instruction` 与普通字段一样占一列；跨两列字段所在行 4 个字段，其他行仍为 5 个字段；字段标签字号已调大一号；明细表格在预览区宽度有空余时自动撑满列宽，字段过多时仍保留横向滚动
 - 主界面操作按钮行保持固定可见，按钮按文字自然宽度排列，顶部按钮内部水平留白为 10px、相邻间距为 10px，底部按钮内部水平留白和相邻间距均为 15px；预览页签内容不再参与窗口尺寸计算，表格超高/超宽时通过内部滚动条查看
 - `GE-发票单` Excel 导出按 `DOC_PO_HEADER.xlsx` 的采购订单表头模板生成，固定值与发票字段映射自动写入
 - `GE-发票单` 仅一个 LPN（或仅一个 LPN+Serial）时保留一行并写原始 QTY，不再按 QTY 重复生成多行
@@ -48,15 +52,15 @@
 - 顶部「确认并导出」与「中止」之间提供「接口发送」按钮；对 `GE-发票单`、`GE-ORACLE拣货单`、`GE-OSCAR拣货单` 通用，仅当前单据页签有可发送明细时启用，点击后弹出上下分栏只读窗口：上方固定展示组装好的当前模板 WMS JSON 报文，下方展示接口返回内容（状态 + 格式化 JSON），默认报文区约 70%、返回区约 30%，重新发送后返回内容覆盖上一次回告；接口发送与二级窗口确认发送使用深色文字，二级窗口「新增产品」「确认发送」与「关闭」固定位于底部右侧；打开接口发送二级窗口时最小化程序，从任务栏恢复后主窗口与二级窗口一并显示
 - 接口发送二级窗口底部「确认发送」左侧及主界面底部均提供「新增产品」；点击后在独立模态窗口录入产品主数据并通过一次 Flux WMS `putSKU` 请求批量新增到 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，四条产品记录仅 `customerId` 不同；产品编码/产品描述必填且标红加粗，六个产品属性选择框联动是否医疗器械，医疗器械勾选后开放有效期及日/月/年单位填写；发送成功/失败回告展示在弹窗内，成功后弹窗保留便于连续录入，可「清空」继续新增
 - 程序启动时先加载用户主目录中的医疗器械目录缓存，再在后台异步调用 `QUERYMD` 刷新；HTTP 200 时覆盖上次缓存，接口失败时继续使用上次成功缓存，网络查询不阻塞 OCR
-- 使用医疗器械 SKU 检查三种模板的明细行：命中时在「明细」标题行居中加粗标红显示「该订单包含医疗器械（标红显示），请注意！」，并将命中的实际明细行文字标红；OCR 返回、人工新增/插入/粘贴/删除/修改单元格后都会自动回刷
+- 使用医疗器械 SKU 检查三种模板的明细行：命中时在「明细」标题行居中加粗标红显示「该订单包含医疗器械（标红显示），请注意！」，并将命中的实际明细行文字标红；OCR 返回、人工新增/插入/粘贴/删除/修改单元格后都会自动回刷，同时同步刷新两个拣货单的 `客商编码` 可编辑状态与标签样式
 - 新增产品勾选「医疗器械」且发送成功后，自动重新查询全部医疗器械目录并覆盖缓存；缓存使用用户主目录和跨平台原子替换写入，兼容 macOS、Windows、麒麟 Linux
 - 底部「查询日志」右侧新增「查询医疗器械」入口，打开居中、非模态二级列表窗口，重复点击只聚焦已有窗口；列表展示产品编码、是否序列号控制、是否批次控制、是否效期控制、是否危险品、是否球管，五个属性仅在接口值分别为 `SNY`、`LOTY`、`EXPY`、`HAZARDY`、`TUBE` 时显示 `Y`，其他非空值或空值显示 `N`；表头和单元格内容居中，支持 SKU 模糊搜索及点击任意列标题按升序、降序、原始顺序切换
 - 医疗器械列表底部提供「重新查询」「新增产品」「关闭」；重新查询期间按钮禁用并显示状态，网络失败保留当前列表，HTTP 200 成功（包括空列表）整体覆盖缓存；旧版纯 SKU 数组缓存继续参与医疗器械匹配，五个属性在列表中显示空白，下一次成功查询后整体迁移为记录格式
 - 新增产品时序列号/批次/效期/危险品/球管五个属性未勾选时，`putSKU` 报文的 `skuGroup1-5` 统一传 `N`；勾选时仍分别传 `SNY`/`LOTY`/`EXPY`/`HAZARDY`/`TUBE`，`freightClass` 与有效期字段保持现状
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
 - 接口发送与新增产品的返回区使用跨平台 Tk 原生全宽状态条和文本边框：发送中为蓝色、成功为绿色、失败为红色、未发送为灰色；状态条始终保留明确文字，避免仅依赖颜色判断
-- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
-- `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部可选发送 `consigneeName=供应商`、`consigneeContact=收货人`、`consigneeTel1=收货人电话`（空值省略），不再固定 `consigneeName=虚拟收货人`、不再发送 `hedi13/14/15`，仍映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
+- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 取 `客商编码`，为空时回退 `CONSIGNEEID`；固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
+- `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 取 `客商编码`，为空时回退 `CONSIGNEEID`；可选发送 `consigneeName=供应商`、`consigneeContact=收货人`、`consigneeTel1=收货人电话`（空值省略），不再固定 `consigneeName=虚拟收货人`、不再发送 `hedi13/14/15`，仍映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
 - Flux WMS `putOriginalSalesOrder` 字段映射文档已同步到发送实现，覆盖 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 销售订单导出字段到报文字段的映射，详见 `docs/wms_put_original_sales_order_mapping.md`
 - 解析完成后按文件生成多个预览页签，页签只显示文件名，顶部单独展示当前预览文件，页签内显示处理状态
 - 预览表格新增界面序号，新增/删除行后自动重排，序号不写入导出的 Excel
@@ -179,7 +183,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - 飞书 App 凭据、多维表格记录写入地址、每个成功文件写入次数 `FEISHU_CALL_TIMES=3`
 - 三种单据的 `订单类型` 选项、默认值和导出代码集中在 `config.py`；后续扩展只需在对应模板的 `ORDER_TYPE_OPTIONS_BY_TEMPLATE` 映射中新增一项，并按需调整 `DEFAULT_ORDER_TYPE_BY_TEMPLATE`
 - Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射集中在 `wms_client.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
-- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射集中在 `wms_client.py`
+- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射集中在 `wms_client.py`，`consigneeId` 统一读取单据头 `客商编码` 并以 `CONSIGNEEID` 回退
 - Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
 - Flux WMS `QUERYMD` 医疗器械目录查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，目录记录缓存读取、覆盖和物料编码匹配集中在 `medical_device_client.py`
 
@@ -199,10 +203,13 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - 切换模板规则会直接清空当前预览页签，无确认弹窗；手工填写内容未导出时会丢失，建议后续增加确认或草稿保护。
 - WMS 接口地址为 QAS 测试环境，真实内网联通性需在现场验证。
 - Flux WMS `putOriginalSalesOrder` 已接入 QAS 接口发送，但正式联调时应确认 `consigneeContact`、`consigneeTel1`、`userDefine`、`dedi04-20` 等字段语义和 QAS 与生产接口差异。
-- 医疗器械目录查询失败时会回退到用户主目录缓存；首次运行、缓存缺失/损坏且接口不可用时无法判定医疗器械范围，此时不显示提示也不标红明细。旧版纯 SKU 缓存可以继续参与匹配，但五个属性在列表中显示空白，直至下一次成功刷新。
+- 医疗器械目录查询失败时会回退到用户主目录缓存；首次运行、缓存缺失/损坏且接口不可用时无法判定医疗器械范围，此时不显示提示也不标红明细，`客商编码` 不要求填写并回退 `CONSIGNEEID`。旧版纯 SKU 缓存可以继续参与匹配，但五个属性在列表中显示空白，直至下一次成功刷新。
 
 ## 更新记录
 
+- 2026-09-14: [新增] ORACLE/OSCAR 拣货单据头在 `订单类型` 后新增条件必填 `客商编码`：医疗器械命中时可编辑并以红色加粗提示，未命中时禁用并显示 `CONSIGNEEID`；每个页签独立保留手工值，目录刷新同步重算所有打开页签
+- 2026-09-14: [变更] ORACLE 拣货单预览单据头将 `Pick Slip Print Date` 调整到 `客商编码` 后
+- 2026-09-14: [变更] ORACLE 拣货单 `Shipping Instruction` 恢复单列；Excel ORACLE `V` / OSCAR `Z` 动态写入人工 `客商编码` 或回退 `CONSIGNEEID`；两个拣货单 WMS `consigneeId` 统一读取该单据头字段
 - 2026-09-14: [修复] 医疗器械列表的序列号、批次、效期、危险品、球管属性改为按 `SNY`、`LOTY`、`EXPY`、`HAZARDY`、`TUBE` 精确值映射 `Y/N`，其他非空值或空值显示 `N`
 - 2026-09-14: [新增] 底部「查询日志」右侧新增「查询医疗器械」非模态列表窗口，展示缓存的医疗器械目录记录，支持 SKU 模糊搜索、列标题升序/降序/原始顺序切换、重新查询、新增产品和关闭；缓存升级为包含 `sku_Group1-5` 的记录并兼容旧纯 SKU 数组
 - 2026-09-14: [新增] 预览明细表格支持 `Ctrl/Cmd+Z` 按页签撤销最近 20 步单元格修改、新增、插入、粘贴和删除；撤销恢复原层级、样式、选中行与滚动位置，编辑中按下则取消当前单元格编辑

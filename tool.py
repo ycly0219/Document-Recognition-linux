@@ -44,6 +44,7 @@ from parsers import (
     get_order_type_labels,
     get_preview_hidden_fields,
     get_preview_layout,
+    get_preview_wide_fields,
     merge_preview_rows,
     parse_commit_result,
 )
@@ -1066,6 +1067,40 @@ def _refresh_file_medical_device_display(
     else:
         warning_label.place_forget()
 
+    file_result["medical_device_present"] = has_medical_device
+    consignee_entry = file_result.get("consignee_entry")
+    consignee_label = file_result.get("consignee_label")
+    consignee_value_var = file_result.get("consignee_value_var")
+    if (
+        consignee_entry is None
+        or consignee_label is None
+        or consignee_value_var is None
+    ):
+        return
+    try:
+        if (
+            not consignee_entry.winfo_exists()
+            or not consignee_label.winfo_exists()
+        ):
+            return
+    except tk.TclError:
+        return
+
+    header_values = file_result.get("header_values", {})
+    if has_medical_device:
+        manual_value = file_result.get("consignee_manual_value", "")
+        consignee_label.config(
+            font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
+        )
+        consignee_entry.config(state=tk.NORMAL)
+        consignee_value_var.set(manual_value)
+        header_values["客商编码"] = manual_value
+    else:
+        consignee_label.config(font=BODY_FONT, fg="#6B7280")
+        consignee_entry.config(state=tk.DISABLED)
+        consignee_value_var.set("CONSIGNEEID")
+        header_values["客商编码"] = "CONSIGNEEID"
+
 
 def _set_medical_device_refresh_state(active, status):
     """同步医疗器械窗口的查询状态和重新查询按钮。"""
@@ -1461,21 +1496,27 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
     """把单据头字段渲染为多列表单，编辑时直接同步到导出数据。"""
     form = tk.Frame(parent)
     columns = 5 if len(header_fields) >= 5 else max(1, len(header_fields))
-    wide_fields = set()
-    if select_text == "GE-OSCAR拣货单":
-        wide_fields.add("收货地址")
-    elif select_text == "GE-ORACLE拣货单":
-        wide_fields.update(("Ship To Address", "Shipping Instruction"))
+    wide_fields = set(get_preview_wide_fields(select_text))
     placements = _build_header_placements(header_fields, wide_fields, columns)
     for index, field in enumerate(header_fields):
         row, column, span = placements[index]
         cell = tk.Frame(form)
         cell.grid(row=row, column=column, columnspan=span,
                   sticky="nsew", padx=4, pady=2)
-        label_fg = "#B42318" if field in ("订单类型", "运单号") else "#111827"
+        label_fg = (
+            MEDICAL_DEVICE_WARNING_COLOR
+            if field in ("订单类型", "运单号")
+            else "#6B7280" if field == "客商编码"
+            else "#111827"
+        )
+        label_font = BODY_FONT if field == "客商编码" else BODY_FONT_BOLD
         display_label = OSCAR_HEADER_DISPLAY_LABELS.get(field, field)
-        tk.Label(cell, text=display_label, anchor="w",
-                 font=BODY_FONT_BOLD, fg=label_fg).pack(fill=tk.X)
+        label = tk.Label(
+            cell, text=display_label, anchor="w", font=label_font, fg=label_fg
+        )
+        label.pack(fill=tk.X)
+        if field == "客商编码":
+            file_result["consignee_label"] = label
         value_var = tk.StringVar(master=form, value=header_values.get(field, ""))
         if (
             (select_text == "GE-OSCAR拣货单" and field == "收货地址")
@@ -1515,18 +1556,30 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
                     cell, textvariable=value_var, state="readonly",
                     values=order_type_labels,
                 ).pack(fill=tk.X)
+            elif field == "客商编码":
+                entry = tk.Entry(cell, textvariable=value_var)
+                entry.pack(fill=tk.X)
+                file_result["consignee_entry"] = entry
+                file_result["consignee_value_var"] = value_var
             else:
                 tk.Entry(cell, textvariable=value_var).pack(fill=tk.X)
             value_var.trace_add(
                 "write",
                 lambda *_args, field=field, value_var=value_var,
-                file_result=file_result: _update_preview_header(
+                file_result=file_result: _sync_header_value(
                     file_result, field, value_var.get()
                 ),
             )
     for col_index in range(columns):
         form.columnconfigure(col_index, weight=1, uniform="header")
     return form
+
+
+def _sync_header_value(file_result, field, value):
+    """保存单据头编辑值，并单独保留人工填写的客商编码。"""
+    _update_preview_header(file_result, field, value)
+    if field == "客商编码" and file_result.get("medical_device_present"):
+        file_result["consignee_manual_value"] = value
 
 
 def _build_header_placements(fields, wide_fields, columns=5):
@@ -1566,10 +1619,14 @@ def _build_file_tab(file_result, headers, header_fields, detail_fields,
     )
     status_label.pack(fill=tk.X, padx=8, pady=(0, 4))
     file_result["status_label"] = status_label
+    if "consignee_manual_value" not in file_result:
+        file_result["consignee_manual_value"] = ""
     hidden_fields = get_preview_hidden_fields(select_text)
     header_values = _header_values_from_rows(
         file_result.get("rows") or [], headers, header_fields, hidden_fields
     )
+    if select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单"):
+        header_values["客商编码"] = ""
     if not header_values.get("订单类型"):
         prior_order_type = file_result.get("header_values", {}).get("订单类型", "")
         if prior_order_type in get_order_type_labels(select_text):
@@ -1984,6 +2041,22 @@ def _manual_export_base_name(select_text, header_values):
     return value or MANUAL_FILENAME
 
 
+def _missing_consignee_files(file_results):
+    """返回包含医疗器械但未填写客商编码的文件名。"""
+    missing_files = []
+    for info in file_results:
+        _, detail_rows = info["tree"].get_data()
+        if (
+            detail_rows
+            and info.get("medical_device_present")
+            and not str(
+                info.get("header_values", {}).get("客商编码", "")
+            ).strip()
+        ):
+            missing_files.append(info["filename"])
+    return missing_files
+
+
 def start_export():
     """选择导出目录后收集有明细的文件页签并启动批量导出线程。"""
     missing_files = []
@@ -2014,6 +2087,16 @@ def start_export():
             "以下文件请先填写运单号：\n" + "\n".join(missing_tracking_files),
         )
         return
+
+    if preview_select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单"):
+        missing_consignee_files = _missing_consignee_files(preview_files)
+        if missing_consignee_files:
+            messagebox.showwarning(
+                "温馨提示",
+                "以下文件请先填写客商编码：\n"
+                + "\n".join(missing_consignee_files),
+            )
+            return
 
     export_targets = []
     for info in preview_files:
@@ -2456,6 +2539,15 @@ def open_wms_send_window():
     header_values = info.get("header_values", {})
     if not str(header_values.get("订单类型", "")).strip():
         messagebox.showwarning("温馨提示", "当前单据请先选择订单类型")
+        return
+    if (
+        preview_select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单")
+        and _missing_consignee_files([info])
+    ):
+        messagebox.showwarning(
+            "温馨提示",
+            "请先填写客商编码：\n" + info["filename"],
+        )
         return
     if preview_select_text == "GE-发票单":
         if not str(header_values.get("运单号", "")).strip():

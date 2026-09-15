@@ -84,12 +84,16 @@ _INVOICE_DYNAMIC_COLUMNS = {
     "AL": 11, # CUSTOMER PO
 }
 
+_ORACLE_CORE_INDEX = {
+    field: index
+    for index, field in enumerate(get_core_headers("GE-ORACLE拣货单"))
+}
+
 _SALESORDER_FIXED_VALUES = {
     "A": "WH004078",
     "B": "00",
     "E": "Y",
     "F": "GEHC",
-    "V": "CONSIGNEEID",
     "AE": "WH004078",
     "AF": "GEHC",
     "AH": "00",
@@ -104,31 +108,37 @@ _SALESORDER_FIXED_VALUES = {
 }
 
 _SALESORDER_DYNAMIC_COLUMNS = {
-    "C": 0,    # 订单类型 -> GNCK_*/GWCK_*
-    "D": 25,   # Pick Slip Print Date
-    "G": 1,    # Order Number
-    "I": 26,   # System Id -> 参考编号3
-    "L": 10,   # OrderType
-    "M": 11,   # Ordered Date
-    "N": 12,   # Shipment Priority
-    "O": 13,   # Ship Method
-    "P": 14,   # Service Level
-    "Q": 15,   # FE SSO
-    "R": 16,   # FE Name
-    "S": 22,   # Shipping Instruction
-    "T": 23,   # Special Instruction
-    "U": 27,   # Pick From Subinv
-    "W": 20,   # Ship To Address
-    "Y": 19,   # SHIP TO NO -> udf01
-    "AG": 3,   # Item Number
-    "AI": 7,   # Lot
-    "AK": 24,  # Org
-    "AL": 27,  # Pick From Subinv -> 质量状态
-    "AM": 6,   # Serial
-    "AN": 5,   # LPN
-    "AO": 4,   # Qty
-    "AW": 2,   # Task Id
-    "AY": 9,   # Pick From Locator
+    "C": _ORACLE_CORE_INDEX["订单类型"],          # GNCK_*/GWCK_*
+    "D": _ORACLE_CORE_INDEX["Pick Slip Print Date"],
+    "G": _ORACLE_CORE_INDEX["Order Number"],
+    "I": _ORACLE_CORE_INDEX["System Id"],          # 参考编号3
+    "L": _ORACLE_CORE_INDEX["OrderType"],
+    "M": _ORACLE_CORE_INDEX["Ordered Date"],
+    "N": _ORACLE_CORE_INDEX["Shipment Priority"],
+    "O": _ORACLE_CORE_INDEX["Ship Method"],
+    "P": _ORACLE_CORE_INDEX["Service Level"],
+    "Q": _ORACLE_CORE_INDEX["FE SSO"],
+    "R": _ORACLE_CORE_INDEX["FE Name"],
+    "S": _ORACLE_CORE_INDEX["Shipping Instruction"],
+    "T": _ORACLE_CORE_INDEX["Special Instruction"],
+    "U": _ORACLE_CORE_INDEX["Pick From Subinv"],
+    "V": _ORACLE_CORE_INDEX["客商编码"],
+    "W": _ORACLE_CORE_INDEX["Ship To Address"],
+    "Y": _ORACLE_CORE_INDEX["SHIP TO NO"],          # udf01
+    "AG": _ORACLE_CORE_INDEX["Item Number"],
+    "AI": _ORACLE_CORE_INDEX["Lot"],
+    "AK": _ORACLE_CORE_INDEX["Org"],
+    "AL": _ORACLE_CORE_INDEX["Pick From Subinv"],  # 质量状态
+    "AM": _ORACLE_CORE_INDEX["Serial"],
+    "AN": _ORACLE_CORE_INDEX["LPN"],
+    "AO": _ORACLE_CORE_INDEX["Qty"],
+    "AW": _ORACLE_CORE_INDEX["Task Id"],
+    "AY": _ORACLE_CORE_INDEX["Pick From Locator"],
+}
+
+_OSCAR_CORE_INDEX = {
+    field: index
+    for index, field in enumerate(get_core_headers("GE-OSCAR拣货单"))
 }
 
 _OSCAR_FIXED_VALUES = {
@@ -136,7 +146,6 @@ _OSCAR_FIXED_VALUES = {
     "B": "00",
     "E": "Y",
     "F": "GEHC",
-    "Z": "CONSIGNEEID",
     "AL": "WH004078",
     "AM": "GEHC",
     "AO": "00",
@@ -151,25 +160,26 @@ _OSCAR_FIXED_VALUES = {
 }
 
 _OSCAR_DYNAMIC_COLUMNS = {
-    "C": 0,    # 订单类型 -> GNCK_*/GWCK_*
-    "G": 1,    # 服务申请号
-    "H": 17,   # SR编号
-    "I": 16,   # 客户设备id
-    "P": 13,   # 时效
-    "Q": 9,    # SSO
-    "R": 11,   # 姓名
-    "AA": 8,   # 供应商 -> 收货人名称
-    "AB": 10,  # 收货人 -> 收货联系人
-    "AC": 14,  # 收货人电话 -> 收货人电话1
-    "AD": 12,  # 收货地址
-    "AE": 15,  # 申请说明
-    "AN": 2,   # 物料编号
-    "AR": 7,   # 仓库
-    "AS": 6,   # 状态: 好件->GOOD
-    "AT": 4,   # 序列号
-    "AV": 3,   # 数量
-    "BE": 18,  # 跟踪号
-    "BF": 5,   # 货位
+    "C": _OSCAR_CORE_INDEX["订单类型"],          # GNCK_*/GWCK_*
+    "G": _OSCAR_CORE_INDEX["服务申请号"],
+    "H": _OSCAR_CORE_INDEX["SR编号"],
+    "I": _OSCAR_CORE_INDEX["客户设备id"],
+    "P": _OSCAR_CORE_INDEX["时效"],
+    "Q": _OSCAR_CORE_INDEX["SSO"],
+    "R": _OSCAR_CORE_INDEX["姓名"],
+    "Z": _OSCAR_CORE_INDEX["客商编码"],
+    "AA": _OSCAR_CORE_INDEX["供应商"],          # 收货人名称
+    "AB": _OSCAR_CORE_INDEX["收货人"],          # 收货联系人
+    "AC": _OSCAR_CORE_INDEX["收货人电话"],      # 收货人电话1
+    "AD": _OSCAR_CORE_INDEX["收货地址"],
+    "AE": _OSCAR_CORE_INDEX["申请说明"],
+    "AN": _OSCAR_CORE_INDEX["物料编号"],
+    "AR": _OSCAR_CORE_INDEX["仓库"],
+    "AS": _OSCAR_CORE_INDEX["状态"],            # 好件->GOOD
+    "AT": _OSCAR_CORE_INDEX["序列号"],
+    "AV": _OSCAR_CORE_INDEX["数量"],
+    "BE": _OSCAR_CORE_INDEX["跟踪号"],
+    "BF": _OSCAR_CORE_INDEX["货位"],
 }
 
 _ORACLE_MONTH_NAMES = {
@@ -295,6 +305,8 @@ def _export_oracle_salesorder_template(core_data, output_file):
                 value = _normalize_oracle_datetime(value, include_time=False)
             elif col_name == "AL":
                 value = _oracle_quality_status(value)
+            elif col_name == "V":
+                value = str(value or "").strip() or "CONSIGNEEID"
             ws[f"{col_name}{row_index}"] = value
 
     wb.save(output_file)
@@ -326,6 +338,8 @@ def _export_oscar_salesorder_template(core_data, output_file):
                 value = "GOOD" if str(value).strip() == "好件" else ""
             elif col_name == "AT":
                 value = _normalize_oscar_serial(value)
+            elif col_name == "Z":
+                value = str(value or "").strip() or "CONSIGNEEID"
             ws[f"{col_name}{row_index}"] = value
 
     wb.save(output_file)

@@ -38,6 +38,7 @@ def get_core_headers(select_text):
     if select_text == "GE-ORACLE拣货单":
         return [
             "订单类型",
+            "客商编码",
             "Order Number",
             "Task Id",
             "Item Number",
@@ -71,6 +72,7 @@ def get_core_headers(select_text):
     elif select_text == "GE-OSCAR拣货单":
         return [
             "订单类型",
+            "客商编码",
             "服务申请号", "物料编号", "数量", "序列号", "货位",
             "状态", "仓库", "供应商", "SSO", "收货人",
             "姓名", "收货地址", "时效", "收货人电话", "申请说明",
@@ -92,6 +94,8 @@ _PREVIEW_LAYOUT = {
     "GE-ORACLE拣货单": (
         [
             "订单类型",
+            "客商编码",
+            "Pick Slip Print Date",
             "Order Number",
             "OrderType",
             "Shipment Priority",
@@ -108,7 +112,6 @@ _PREVIEW_LAYOUT = {
             "Pick From Subinv",
             "Customer PO",
             "Delivery",
-            "Pick Slip Print Date",
         ],
         [
             "Task Id",
@@ -125,6 +128,7 @@ _PREVIEW_LAYOUT = {
     "GE-OSCAR拣货单": (
         [
             "订单类型",
+            "客商编码",
             "服务申请号", "SR编号", "时效", "供应商", "收货人",
             "收货地址", "收货人电话", "申请说明", "SSO", "姓名", "客户设备id",
         ],
@@ -145,6 +149,12 @@ _PREVIEW_LAYOUT = {
 }
 
 
+_PREVIEW_WIDE_FIELDS = {
+    "GE-ORACLE拣货单": ("Ship To Address",),
+    "GE-OSCAR拣货单": ("收货地址",),
+}
+
+
 _PREVIEW_HIDDEN_FIELDS = {
     "GE-ORACLE拣货单": ("Ordered Date", "Ship Method"),
 }
@@ -160,6 +170,11 @@ def get_preview_layout(select_text):
 def get_preview_hidden_fields(select_text):
     """返回预览不展示、但导出与接口仍需保留的 Header 字段。"""
     return _PREVIEW_HIDDEN_FIELDS.get(select_text, ())
+
+
+def get_preview_wide_fields(select_text):
+    """返回预览中跨两列展示的 Header 字段。"""
+    return _PREVIEW_WIDE_FIELDS.get(select_text, ())
 
 
 def merge_preview_rows(select_text, header_values, detail_rows):
@@ -229,6 +244,7 @@ def _parse_oracle_picklist(commit_result, filename):
         # 按 get_core_headers 的预览列顺序拼接字段
         rows.append([
             "",
+            "",
             order_number,
             task_id,
             item_no,
@@ -297,6 +313,7 @@ def _parse_oscar_picklist(commit_result, filename):
         warehouse = item.get("仓库", {}).get("value", "").strip()
 
         rows.append([
+            "",
             "",
             service_apply_no, mat_no, qty, serial_no, locator, status_val,
             warehouse, supplier, sso, consignee_name, real_name, ship_addr,
