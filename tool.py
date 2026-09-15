@@ -2278,10 +2278,14 @@ def open_add_product_window(parent=None):
         ("医疗器械", medical_var),
         ("球管", tube_var),
     )
+    expiry_checkbox = None
     for col, (text, variable) in enumerate(checkbox_first_row):
-        tk.Checkbutton(
+        checkbox = tk.Checkbutton(
             attribute_frame, text=text, variable=variable, font=BODY_FONT
-        ).grid(row=0, column=col, sticky="w", padx=(0, 16))
+        )
+        checkbox.grid(row=0, column=col, sticky="w", padx=(0, 16))
+        if variable is expiry_var:
+            expiry_checkbox = checkbox
     for col, (text, variable) in enumerate(checkbox_second_row):
         tk.Checkbutton(
             attribute_frame, text=text, variable=variable, font=BODY_FONT
@@ -2320,8 +2324,37 @@ def open_add_product_window(parent=None):
         for radio in shelf_radios:
             radio.config(state=state)
 
-    medical_var.trace_add("write", toggle_shelf_life)
-    toggle_shelf_life()
+    expiry_before_medical = None
+
+    def on_serial_change(*_args):
+        if medical_var.get() and serial_var.get():
+            batch_var.set(False)
+
+    def on_batch_change(*_args):
+        if medical_var.get() and batch_var.get():
+            serial_var.set(False)
+
+    def apply_medical_rules(*_args):
+        nonlocal expiry_before_medical
+        if medical_var.get():
+            if serial_var.get() and batch_var.get():
+                serial_var.set(False)
+                batch_var.set(False)
+            if expiry_before_medical is None:
+                expiry_before_medical = bool(expiry_var.get())
+                expiry_var.set(True)
+            expiry_checkbox.config(state=tk.DISABLED)
+        else:
+            if expiry_before_medical is not None:
+                expiry_var.set(expiry_before_medical)
+                expiry_before_medical = None
+            expiry_checkbox.config(state=tk.NORMAL)
+        toggle_shelf_life()
+
+    serial_var.trace_add("write", on_serial_change)
+    batch_var.trace_add("write", on_batch_change)
+    medical_var.trace_add("write", apply_medical_rules)
+    apply_medical_rules()
 
     response_frame = tk.Frame(body)
     response_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
@@ -2355,6 +2388,8 @@ def open_add_product_window(parent=None):
             return
         product_code_var.set("")
         sku_descr_text.delete("1.0", tk.END)
+        if medical_var.get():
+            medical_var.set(False)
         for variable in checkbox_vars:
             variable.set(False)
         shelf_life_var.set("")

@@ -116,6 +116,14 @@ def validate_put_sku_form(form):
     if not _text(form.get("sku_descr")):
         return "产品描述不能为空"
     if _checked(form.get("medical_device")):
+        if not _checked(form.get("expiry_control")):
+            return "勾选医疗器械后，效期控制必选"
+        serial_control = _checked(form.get("serial_control"))
+        batch_control = _checked(form.get("batch_control"))
+        if not serial_control and not batch_control:
+            return "勾选医疗器械后，序列号控制和批次控制必须选择一项"
+        if serial_control and batch_control:
+            return "勾选医疗器械后，序列号控制和批次控制只能选择一项"
         shelf_life = form.get("shelf_life")
         if shelf_life is None or not str(shelf_life).isdigit():
             return "勾选医疗器械后，有效期必填且必须为纯数字"
