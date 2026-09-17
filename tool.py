@@ -33,7 +33,6 @@ from medical_device_client import (
     medical_device_catalog_display_rows,
     medical_device_catalog_skus,
     refresh_or_load_medical_device_catalog,
-    row_contains_medical_device_sku,
     sort_medical_device_catalog_rows,
 )
 from mock_data import generate_mock_data
@@ -48,12 +47,12 @@ from parsers import (
     get_core_headers,
     get_default_order_type_label,
     get_order_type_labels,
-    get_preview_hidden_fields,
     get_preview_layout,
     get_preview_wide_fields,
     merge_preview_rows,
     parse_commit_result,
 )
+import preview_table as preview_model
 from wms_client import (
     build_put_original_sales_order_payload,
     build_put_purchase_order_payload,
@@ -74,6 +73,7 @@ continue_thread = None
 abort_event = threading.Event()
 preview_select_text = ""
 preview_files = []
+preview_table = None
 active_tree = None
 continue_query_active = False
 last_combo_text = ""
@@ -160,6 +160,15 @@ MAX_BATCH_FILES = 5
 SUPPORTED_DROP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 MANUAL_STATUS = "人工填写"
 MANUAL_FILENAME = "空白单据"
+_UI_STATUS_TO_MODEL = {
+    "成功": preview_model.SUCCESS,
+    "失败": preview_model.FAILED,
+    "结果未生成": preview_model.PENDING,
+    MANUAL_STATUS: preview_model.MANUAL,
+}
+_MODEL_STATUS_TO_UI = {
+    value: key for key, value in _UI_STATUS_TO_MODEL.items()
+}
 RESPONSE_STATE_STYLES = {
     "neutral": {
         "text": "尚未发送",
@@ -192,19 +201,16 @@ OSCAR_HEADER_DISPLAY_LABELS = {
 
 
 class EditableTreeview(ttk.Treeview):
-    """支持双击编辑单元格、插入/新增/删除行以及整行复制粘贴的 Treeview。"""
+    """渲染预览快照，并把用户操作转发给权威状态模型。"""
 
-    UNDO_LIMIT = 20
-
-    def __init__(self, master, on_change=None, **kwargs):
+    def __init__(self, master, on_command=None, **kwargs):
         super().__init__(master, **kwargs)
         self._entry = None
         self._bound_item = None
         self._bound_col = None
-        self._pending_edit_snapshot = None
-        self._undo_stack = []
         self._clipboard = []
-        self._on_change = on_change
+        self._on_command = on_command
+        self._snapshot = None
         self.bind("<Double-1>", self._start_edit)
         for sequence in ("<Control-c>", "<Command-c>"):
             self.bind(sequence, self._copy_shortcut)
@@ -212,6 +218,87 @@ class EditableTreeview(ttk.Treeview):
             self.bind(sequence, self._paste_shortcut)
         for sequence in ("<Control-z>", "<Command-z>"):
             self.bind(sequence, self._undo_shortcut)
+
+    def set_snapshot(self, snapshot):
+        """按只读模型快照重绘当前页签的明细树。"""
+        self._snapshot = snapshot
+        for row_id in self.get_children(""):
+            self.delete(row_id)
+        if snapshot is None:
+            return
+
+        line_by_id = {
+            line.line_id: line for line in snapshot.lines
+        }
+        group_by_line = {}
+        for group in snapshot.split_groups:
+            for line_id in group.line_ids:
+                group_by_line[line_id] = group
+
+        rendered_groups = set()
+        rendered_lines = set()
+        export_index = 0
+        for line in snapshot.lines:
+            group = group_by_line.get(line.line_id)
+            if group is not None:
+                if group.group_id not in rendered_groups:
+                    self.insert(
+                        "",
+                        tk.END,
+                        iid=group.group_id,
+                        values=group.summary_values,
+                        tags=("summary_row",),
+                    )
+                    self.item(group.group_id, open=True)
+                    for child_id in group.line_ids:
+                        child = line_by_id.get(child_id)
+                        if child is None:
+                            continue
+                        self.insert(
+                            group.group_id,
+                            tk.END,
+                            iid=child.line_id,
+                            values=child.values,
+                            tags=self._row_tags(
+                                child, export_index
+                            ),
+                        )
+                        export_index += 1
+                    rendered_groups.add(group.group_id)
+                    rendered_lines.update(group.line_ids)
+                continue
+            if line.line_id in rendered_lines:
+                continue
+            self.insert(
+                "",
+                tk.END,
+                iid=line.line_id,
+                values=line.values,
+                tags=self._row_tags(line, export_index),
+            )
+            export_index += 1
+        self._renumber()
+        self.auto_size_columns(fill_width=True)
+
+    @staticmethod
+    def _row_tags(line, export_index):
+        tags = (
+            "zebra_even" if export_index % 2 == 0 else "zebra_odd"
+        )
+        if line.medical_device:
+            tags = (tags, MEDICAL_DEVICE_ROW_TAG)
+        return tags
+
+    def select_line_ids(self, line_ids):
+        """选中指定实际明细行，缺失的 ID 自动忽略。"""
+        selected = [
+            line_id for line_id in line_ids or ()
+            if self.exists(line_id)
+        ]
+        if not selected:
+            return
+        self.selection_set(*selected)
+        self.see(selected[0])
 
     def _start_edit(self, event):
         if self.identify("region", event.x, event.y) != "cell":
@@ -227,7 +314,6 @@ class EditableTreeview(ttk.Treeview):
         if not bbox:
             return
         self._finish_edit()
-        self._pending_edit_snapshot = self._snapshot_tree()
         col_id = headers[col_index]
         entry = tk.Entry(self)
         entry.insert(0, self.set(row_id, col_id))
@@ -244,16 +330,18 @@ class EditableTreeview(ttk.Treeview):
             entry.bind(sequence, self._cancel_edit)
 
     def _finish_edit(self, _event=None):
-        if self._entry is not None:
-            new_value = self._entry.get()
-            old_value = self.set(self._bound_item, self._bound_col)
-            changed = new_value != old_value
-            if changed:
-                self._push_undo_snapshot(self._pending_edit_snapshot)
-                self.set(self._bound_item, self._bound_col, new_value)
-            self._destroy_edit()
-            if changed:
-                self._notify_change()
+        if self._entry is None:
+            return
+        new_value = self._entry.get()
+        row_id = self._bound_item
+        col_id = self._bound_col
+        old_value = self.set(row_id, col_id)
+        self._destroy_edit()
+        if new_value != old_value:
+            self._dispatch(
+                "update_line",
+                (row_id, col_id, new_value),
+            )
 
     def _cancel_edit(self, _event=None):
         self._destroy_edit()
@@ -263,14 +351,14 @@ class EditableTreeview(ttk.Treeview):
     def _destroy_edit(self):
         if self._entry is not None:
             self._entry.destroy()
-            self._entry = None
-            self._bound_item = None
-            self._bound_col = None
-        self._pending_edit_snapshot = None
+        self._entry = None
+        self._bound_item = None
+        self._bound_col = None
 
-    def _notify_change(self):
-        if self._on_change is not None:
-            self._on_change()
+    def _dispatch(self, command, payload=()):
+        if self._on_command is None:
+            return None
+        return self._on_command(self, command, payload)
 
     def _copy_shortcut(self, _event=None):
         active_tree_copy_selected()
@@ -281,84 +369,8 @@ class EditableTreeview(ttk.Treeview):
         return "break"
 
     def _undo_shortcut(self, _event=None):
-        self.undo()
+        self._dispatch("undo")
         return "break"
-
-    def _snapshot_tree(self):
-        def snapshot_children(parent_id):
-            rows = []
-            for row_id in self.get_children(parent_id):
-                rows.append({
-                    "values": list(self.item(row_id, "values")),
-                    "tags": tuple(self.item(row_id, "tags")),
-                    "open": bool(self.item(row_id, "open")),
-                    "children": snapshot_children(row_id),
-                })
-            return rows
-
-        return {
-            "rows": snapshot_children(""),
-            "selection": [
-                self._item_path(row_id) for row_id in self.selection()
-            ],
-        }
-
-    def _item_path(self, row_id):
-        path = []
-        current = row_id
-        while current:
-            path.append(self.index(current))
-            current = self.parent(current)
-        return tuple(reversed(path))
-
-    def _push_undo_snapshot(self, snapshot):
-        if snapshot is None:
-            return
-        self._undo_stack.append(snapshot)
-        if len(self._undo_stack) > self.UNDO_LIMIT:
-            del self._undo_stack[0]
-
-    def _record_undo(self):
-        self._push_undo_snapshot(self._snapshot_tree())
-
-    def _restore_snapshot(self, snapshot):
-        for row_id in self.get_children(""):
-            self.delete(row_id)
-
-        restored_rows = {}
-
-        def restore_children(parent_id, parent_path, rows):
-            for index, row in enumerate(rows):
-                row_id = self.insert(
-                    parent_id,
-                    tk.END,
-                    values=row["values"],
-                    tags=row["tags"],
-                )
-                if row["open"]:
-                    self.item(row_id, open=True)
-                restored_rows[parent_path + (index,)] = row_id
-                restore_children(
-                    row_id, parent_path + (index,), row["children"]
-                )
-
-        restore_children("", (), snapshot["rows"])
-        selected = [
-            restored_rows[path]
-            for path in snapshot["selection"]
-            if path in restored_rows
-        ]
-        if selected:
-            self.selection_set(*selected)
-            self.see(selected[0])
-        self._renumber()
-
-    def undo(self):
-        if not self._undo_stack:
-            return False
-        self._restore_snapshot(self._undo_stack.pop())
-        self._notify_change()
-        return True
 
     def _is_summary_row(self, row_id):
         return "summary_row" in self.item(row_id, "tags")
@@ -398,7 +410,7 @@ class EditableTreeview(ttk.Treeview):
             return False
         headers = self["columns"]
         self._clipboard = [
-            [self.set(row_id, col) for col in headers]
+            tuple(self.set(row_id, col) for col in headers)
             for row_id in selected
         ]
         return True
@@ -406,93 +418,49 @@ class EditableTreeview(ttk.Treeview):
     def clear_clipboard(self):
         self._clipboard.clear()
 
+    def _selected_anchor(self):
+        selected = self._selected_rows_in_order()
+        if selected:
+            return selected[-1]
+        return None
+
     def insert_row_after_selection(self):
         if not self["columns"]:
             return None
-        selected = self._selected_rows_in_order()
-        if selected:
-            target = selected[-1]
-        elif self.selection():
-            target = self.selection()[-1]
-        else:
-            target = None
-        if target is not None:
-            parent_id = self.parent(target)
-            children = self.get_children(parent_id)
-            index = children.index(target) + 1
-        else:
-            parent_id = ""
-            index = tk.END
-        self._record_undo()
-        row_id = self.insert(
-            parent_id, index, values=("",) * len(self["columns"]),
-            tags=("new_row",)
-        )
-        if parent_id:
-            self.item(parent_id, open=True)
-        self._renumber()
-        self.selection_set(row_id)
-        self.see(row_id)
-        self._notify_change()
-        return row_id
+        anchor = self._selected_anchor()
+        return self._dispatch("insert_line", (anchor,))
 
     def paste_clipboard(self):
         if not self._clipboard or not self["columns"]:
             return False
-        selected = self._selected_rows_in_order()
-        if selected:
-            target = selected[-1]
-        elif self.selection():
-            target = self.selection()[-1]
-        else:
-            target = None
-        if target is not None:
-            parent_id = self.parent(target)
-            children = self.get_children(parent_id)
-            index = children.index(target) + 1
-        else:
-            parent_id = ""
-            index = len(self.get_children())
-        self._record_undo()
-        pasted = []
-        for offset, values in enumerate(self._clipboard):
-            row_id = self.insert(
-                parent_id, index + offset, values=list(values),
-                tags=("new_row",)
-            )
-            pasted.append(row_id)
-        if parent_id:
-            self.item(parent_id, open=True)
-        self._renumber()
-        self.selection_set(*pasted)
-        self.see(pasted[-1])
-        self._notify_change()
+        anchor = self._selected_anchor()
+        self._dispatch("paste_lines", (anchor, self._clipboard))
         return True
 
     def add_row(self):
         if self["columns"]:
-            self._record_undo()
-            self.insert("", tk.END, values=("",) * len(self["columns"]),
-                        tags=("new_row",))
-            self._renumber()
-            self.see(self.get_children()[-1])
-            self._notify_change()
+            return self._dispatch("insert_line", (None,))
+        return None
 
     def delete_selected(self):
         selected = self.selection()
         if not selected:
             return
-        self._record_undo()
+        line_ids = []
         for row_id in selected:
-            try:
-                self.delete(row_id)
-            except tk.TclError:
-                pass
-        self._renumber()
-        self._notify_change()
+            if self._is_summary_row(row_id):
+                line_ids.extend(self.get_children(row_id))
+            else:
+                line_ids.append(row_id)
+        if line_ids:
+            self._dispatch("delete_lines", (tuple(dict.fromkeys(line_ids)),))
+
+    def undo(self):
+        result = self._dispatch("undo")
+        return bool(result)
 
     def _renumber(self):
-        for index, row_id in enumerate(self.get_children(), 1):
+        for index, row_id in enumerate(self.get_children(""), 1):
             self.item(row_id, text=index)
             if self._is_summary_row(row_id):
                 for child_index, child_id in enumerate(
@@ -521,25 +489,8 @@ class EditableTreeview(ttk.Treeview):
             self.heading(col, anchor="center")
 
     def clear_rows(self):
-        for row_id in self.get_children():
+        for row_id in self.get_children(""):
             self.delete(row_id)
-
-    def get_data(self):
-        headers = list(self["columns"])
-        rows = []
-
-        def visit(parent_id):
-            for row_id in self.get_children(parent_id):
-                if not parent_id and self._is_summary_row(row_id):
-                    visit(row_id)
-                else:
-                    rows.append([
-                        self.set(row_id, col) for col in headers
-                    ])
-
-        visit("")
-        return headers, rows
-
 
 class CopyableTreeview(ttk.Treeview):
     """只读列表，支持通过快捷键或右键菜单复制当前单元格。"""
@@ -1100,85 +1051,215 @@ def _short_tab_label(filename, max_len=22):
     return name[:max_len - 1] + "…"
 
 
-def _header_values_from_rows(rows, full_headers, header_fields, hidden_fields=()):
-    """从头组单据行中提取可见与隐藏 Header 字段的首个非空值。"""
-    fields = list(header_fields) + list(hidden_fields)
-    values = {field: "" for field in fields}
-    for row in rows or []:
-        row_map = dict(zip(full_headers, row))
-        for field in fields:
-            if not values[field] and str(row_map.get(field, "")).strip():
-                values[field] = row_map[field]
-    return values
+def _model_status(status_text):
+    """把旧文件结果中的中文状态转换为权威模型状态。"""
+    try:
+        return _UI_STATUS_TO_MODEL[status_text]
+    except KeyError as exc:
+        raise ValueError(f"未知预览状态: {status_text}") from exc
 
 
-def _detail_rows_from_full_rows(rows, split_groups, full_headers, detail_fields):
-    """从完整数据行中提取预览明细字段，并生成拆分汇总分组元数据。"""
-    detail_rows = []
-    for row in rows or []:
-        row_map = dict(zip(full_headers, row))
-        detail_rows.append([row_map.get(field, "") for field in detail_fields])
-
-    preview_groups = []
-    for group in split_groups or []:
-        child_indexes = [
-            index for index in group.get("child_indexes", [])
-            if index < len(detail_rows)
-        ]
-        if not child_indexes:
-            continue
-        summary_row = dict(zip(full_headers, group.get("summary_row") or []))
-        summary_values = [
-            summary_row.get(field, "") for field in detail_fields
-        ]
-        kept_fields = {"ITEM NUMBER", "QTY", "LPN Number"}
-        for field_index, field in enumerate(detail_fields):
-            if field not in kept_fields:
-                summary_values[field_index] = ""
-        preview_groups.append({
-            "summary": summary_values,
-            "children": [detail_rows[index] for index in child_indexes],
-            "child_indexes": child_indexes,
-        })
-    return detail_rows, preview_groups
+def _document_inputs(raw_file_results):
+    """把后台文件结果转换为模型输入，所有业务字段立即脱敏为只读值。"""
+    inputs = []
+    for index, file_result in enumerate(raw_file_results, start=1):
+        inputs.append(preview_model.DocumentInput(
+            metadata=preview_model.DocumentMetadata(
+                document_id=f"document-{index}",
+                filename=file_result.get("filename") or f"document-{index}",
+                status=_model_status(file_result.get("status", "")),
+                message=file_result.get("message", ""),
+                req_uuid=file_result.get("req_uuid", ""),
+                log_row=tuple(file_result.get("log_row") or ()),
+                manual=bool(file_result.get("manual")),
+            ),
+            header_values=dict(file_result.get("header_values") or {}),
+            rows=tuple(
+                tuple(row) for row in (file_result.get("rows") or ())
+            ),
+            split_groups=tuple(file_result.get("split_groups") or ()),
+        ))
+    return tuple(inputs)
 
 
-def _refresh_file_medical_device_display(
-    file_result, select_text, detail_fields
-):
-    """按当前明细重新判断医疗器械提示，并只标红命中的实际明细行。"""
-    tree = file_result.get("tree")
-    warning_label = file_result.get("medical_warning_label")
-    if tree is None or warning_label is None:
+def _replace_preview_table(select_text, headers, raw_file_results):
+    """创建当前会话唯一的权威预览表格。"""
+    global preview_table
+    header_fields, detail_fields = get_preview_layout(select_text)
+    preview_table = preview_model.PreviewTable(
+        select_text,
+        headers,
+        header_fields,
+        detail_fields,
+        _document_inputs(raw_file_results),
+        catalog_skus=medical_device_skus,
+    )
+    return preview_table
+
+
+def _new_preview_file_info(snapshot, raw_file_result=None):
+    """创建仅保存 Tk 控件引用与展示缓存的页签包装。"""
+    raw_file_result = raw_file_result or {}
+    return {
+        "document_id": snapshot.document_id,
+        "filename": snapshot.metadata.filename,
+        "consignee_manual_value": str(
+            raw_file_result.get("consignee_manual_value", "")
+        ),
+        "medical_device_present": False,
+        "tab": None,
+        "tree": None,
+        "status_label": None,
+        "medical_warning_label": None,
+        "consignee_label": None,
+        "consignee_entry": None,
+        "consignee_value_var": None,
+    }
+
+
+def _preview_file_info(document_id):
+    """按模型单据 ID 查找页签包装。"""
+    for info in preview_files:
+        if info.get("document_id") == document_id:
+            return info
+    return None
+
+
+def _preview_file_info_for_tree(tree):
+    """按 Tk Treeview 查找对应页签包装。"""
+    for info in preview_files:
+        if info.get("tree") is tree:
+            return info
+    return None
+
+
+def _active_preview_document_id():
+    """返回当前选中的预览单据 ID。"""
+    info = _active_preview_file()
+    return info.get("document_id", "") if info is not None else ""
+
+
+def _snapshot_for_info(info):
+    """返回页签包装对应的模型快照。"""
+    if preview_table is None or info is None:
+        return None
+    return preview_table.snapshot(info["document_id"])
+
+
+def _active_snapshot():
+    """返回当前选中页签的模型快照。"""
+    return _snapshot_for_info(_active_preview_file())
+
+
+def _status_text(snapshot):
+    """生成与旧界面一致的状态文案。"""
+    status = _MODEL_STATUS_TO_UI[snapshot.metadata.status]
+    text = f"状态：{status}"
+    if not snapshot.lines:
+        text += "；当前无明细数据"
+    if snapshot.metadata.message:
+        text += f"；{snapshot.metadata.message}"
+    return text
+
+
+def _status_color(snapshot):
+    """返回状态文案对应的前景色。"""
+    if snapshot.metadata.status == preview_model.PENDING:
+        return "#D97706"
+    if snapshot.metadata.status == preview_model.FAILED:
+        return "#B42318"
+    return "#111827"
+
+
+def _render_file_status_label(file_result, snapshot):
+    """按权威快照刷新页签顶部状态文案。"""
+    status_label = file_result.get("status_label")
+    if status_label is None:
         return
     try:
-        if not tree.winfo_exists() or not warning_label.winfo_exists():
+        if status_label.winfo_exists():
+            status_label.config(
+                text=_status_text(snapshot),
+                fg=_status_color(snapshot),
+            )
+    except tk.TclError:
+        pass
+
+
+def _render_preview_snapshot(file_result, snapshot):
+    """把模型快照同步到当前页签的控件。"""
+    tree = file_result.get("tree")
+    if tree is not None:
+        tree.set_snapshot(snapshot)
+    _render_file_status_label(file_result, snapshot)
+    _refresh_file_medical_device_display(
+        file_result,
+        snapshot,
+        preview_select_text,
+    )
+
+
+def _render_preview_document(document_id):
+    """刷新指定单据页签。"""
+    info = _preview_file_info(document_id)
+    snapshot = _snapshot_for_info(info)
+    if info is None or snapshot is None:
+        return
+    _render_preview_snapshot(info, snapshot)
+
+
+def _render_all_preview_files():
+    """刷新全部页签的模型快照。"""
+    for info in preview_files:
+        _render_preview_document(info["document_id"])
+
+
+def _handle_preview_tree_command(tree, command, payload):
+    """把 Tk 明细表格的手势转发给权威模型并重绘结果。"""
+    info = _preview_file_info_for_tree(tree)
+    if info is None or preview_table is None:
+        return None
+    document_id = info["document_id"]
+    try:
+        if command == "update_line":
+            line_id, field, value = payload
+            result = preview_table.update_line(
+                document_id, line_id, field, value
+            )
+        elif command == "insert_line":
+            result = preview_table.insert_line(document_id, payload[0])
+        elif command == "paste_lines":
+            result = preview_table.paste_lines(
+                document_id, payload[0], payload[1]
+            )
+        elif command == "delete_lines":
+            result = preview_table.delete_lines(document_id, payload[0])
+        elif command == "undo":
+            result = preview_table.undo(document_id)
+        else:
+            raise ValueError(f"未知预览表格命令: {command}")
+    except ValueError as exc:
+        print_log(f"预览表格操作失败：{exc}")
+        return None
+
+    _render_preview_snapshot(info, result.snapshot)
+    tree.select_line_ids(result.selection_hint)
+    refresh_export_state()
+    return result
+
+
+def _refresh_file_medical_device_display(file_result, snapshot, select_text):
+    """按权威快照刷新医疗器械提示和客商编码默认值。"""
+    warning_label = file_result.get("medical_warning_label")
+    if warning_label is None:
+        return
+    try:
+        if not warning_label.winfo_exists():
             return
     except tk.TclError:
         return
 
-    has_medical_device = False
-    for parent_id in tree.get_children():
-        row_ids = (
-            tree.get_children(parent_id)
-            if "summary_row" in tree.item(parent_id, "tags")
-            else (parent_id,)
-        )
-        for row_id in row_ids:
-            tags = [
-                tag for tag in tree.item(row_id, "tags")
-                if tag != MEDICAL_DEVICE_ROW_TAG
-            ]
-            row = [
-                tree.set(row_id, column) for column in tree["columns"]
-            ]
-            if row_contains_medical_device_sku(
-                row, detail_fields, select_text, medical_device_skus
-            ):
-                has_medical_device = True
-                tags.append(MEDICAL_DEVICE_ROW_TAG)
-            tree.item(row_id, tags=tags)
-
+    has_medical_device = snapshot.medical_device_present
     if has_medical_device:
         warning_label.config(text=MEDICAL_DEVICE_WARNING)
         if not warning_label.winfo_manager():
@@ -1205,20 +1286,25 @@ def _refresh_file_medical_device_display(
     except tk.TclError:
         return
 
-    header_values = file_result.get("header_values", {})
     if has_medical_device:
         manual_value = file_result.get("consignee_manual_value", "")
+        header_value = manual_value
         consignee_label.config(
             font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
         )
         consignee_entry.config(state=tk.DISABLED)
-        consignee_value_var.set(manual_value)
-        header_values["客商编码"] = manual_value
     else:
+        header_value = "CONSIGNEEID"
         consignee_label.config(font=BODY_FONT, fg="#6B7280")
         consignee_entry.config(state=tk.DISABLED)
-        consignee_value_var.set("CONSIGNEEID")
-        header_values["客商编码"] = "CONSIGNEEID"
+    if preview_table is not None:
+        preview_table.update_header(
+            file_result["document_id"],
+            "客商编码",
+            header_value,
+            record_undo=False,
+        )
+    consignee_value_var.set(header_value)
     _refresh_customer_backfill_state()
 
 
@@ -1523,13 +1609,10 @@ def _apply_medical_device_catalog(catalog):
         medical_device_catalog_skus(medical_device_catalog)
     )
     _refresh_medical_device_window()
-    if not preview_files or not preview_select_text:
+    if preview_table is None or not preview_files or not preview_select_text:
         return
-    _, detail_fields = get_preview_layout(preview_select_text)
-    for file_result in preview_files:
-        _refresh_file_medical_device_display(
-            file_result, preview_select_text, detail_fields
-        )
+    preview_table.refresh_catalog(medical_device_skus)
+    _render_all_preview_files()
 
 
 def _medical_device_catalog_refresh_worker(reason):
@@ -1638,7 +1721,8 @@ def _customer_backfill_error():
     info = _active_preview_file()
     if info is None:
         return "请先选择 ORACLE 或 OSCAR 拣货单页签"
-    if not info.get("medical_device_present"):
+    snapshot = _active_snapshot()
+    if snapshot is None or not snapshot.medical_device_present:
         return "当前页签未命中医疗器械，不能回填客商编码"
     return ""
 
@@ -1735,18 +1819,13 @@ def _use_selected_customer():
         return
 
     info["consignee_manual_value"] = customer_id
-    info.setdefault("header_values", {})["客商编码"] = customer_id
-    value_var = info.get("consignee_value_var")
-    if value_var is not None:
-        value_var.set(customer_id)
-    entry = info.get("consignee_entry")
-    if entry is not None:
-        entry.config(state=tk.DISABLED)
-    label = info.get("consignee_label")
-    if label is not None:
-        label.config(
-            font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
-        )
+    preview_table.update_header(
+        info["document_id"],
+        "客商编码",
+        customer_id,
+        record_undo=False,
+    )
+    _render_preview_document(info["document_id"])
     close_customer_window()
 
 
@@ -1987,7 +2066,7 @@ def _start_customer_query(reason):
 
 
 def _build_scrolled_preview_tree(
-    parent, columns, rows, preview_groups=None, on_change=None
+    parent, columns, snapshot, on_command=None
 ):
     """创建带滚动条的明细预览表格，并返回其外层容器与 Treeview。"""
     frame = tk.Frame(parent)
@@ -1995,7 +2074,7 @@ def _build_scrolled_preview_tree(
         frame,
         style="Preview.Treeview",
         selectmode="extended",
-        on_change=on_change,
+        on_command=on_command,
     )
     tree.bind("<<TreeviewSelect>>",
               lambda _event: refresh_row_action_state())
@@ -2039,48 +2118,8 @@ def _build_scrolled_preview_tree(
     for column in columns:
         tree.heading(column, text=column)
 
-    child_to_group = {}
-    for group in preview_groups or []:
-        for index in group["child_indexes"]:
-            child_to_group[index] = group
-    consumed = set()
-    export_index = 0
-    for row_index, row in enumerate(rows):
-        if row_index in consumed:
-            continue
-        group = child_to_group.get(row_index)
-        if group:
-            summary_id = tree.insert(
-                "", tk.END, values=group["summary"],
-                tags=("summary_row",)
-            )
-            tree.item(summary_id, open=True)
-            for child_index in group["child_indexes"]:
-                tag = (
-                    "zebra_even" if export_index % 2 == 0 else "zebra_odd"
-                )
-                tree.insert(
-                    summary_id, tk.END, values=rows[child_index],
-                    tags=(tag,)
-                )
-                export_index += 1
-            consumed.update(group["child_indexes"])
-            continue
-
-        tag = "zebra_even" if export_index % 2 == 0 else "zebra_odd"
-        insert_args = {"values": row}
-        insert_args["tags"] = (tag,)
-        tree.insert("", tk.END, **insert_args)
-        export_index += 1
-    tree._renumber()
-    tree.auto_size_columns(fill_width=True)
+    tree.set_snapshot(snapshot)
     return frame, tree
-
-
-def _update_preview_header(file_result, field, value):
-    """保存单据头编辑结果，导出重组时供所有明细行使用。"""
-    if field in file_result.get("header_values", {}):
-        file_result["header_values"][field] = value
 
 
 def _build_header_form(parent, file_result, header_fields, header_values, select_text):
@@ -2129,7 +2168,7 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
                 current_field=field,
                 current_result=file_result,
             ):
-                _update_preview_header(
+                _sync_header_value(
                     current_result,
                     current_field,
                     text_widget.get("1.0", "end-1c"),
@@ -2173,7 +2212,13 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
 
 def _sync_header_value(file_result, field, value):
     """保存单据头编辑值，并单独保留客商查询回填的客商编码。"""
-    _update_preview_header(file_result, field, value)
+    if preview_table is not None:
+        preview_table.update_header(
+            file_result["document_id"],
+            field,
+            value,
+            record_undo=False,
+        )
     if field == "客商编码" and file_result.get("medical_device_present"):
         file_result["consignee_manual_value"] = value
 
@@ -2193,45 +2238,25 @@ def _build_header_placements(fields, wide_fields, columns=5):
     return placements
 
 
-def _build_file_tab(file_result, headers, header_fields, detail_fields,
-                    select_text, add_tab=True):
+def _build_file_tab(file_result, snapshot, select_text, add_tab=True):
     """为单个文件创建“单据头表单 + 明细”预览页签，并返回明细表格。"""
     tab = ttk.Frame(preview_notebook)
     tab.pack_propagate(False)
     if add_tab:
         preview_notebook.add(tab, text=_short_tab_label(file_result["filename"]))
 
-    status_text = f"状态：{file_result['status']}"
-    if not file_result.get("rows"):
-        status_text += "；当前无明细数据"
-    if file_result.get("message"):
-        status_text += f"；{file_result['message']}"
     status_frame = tk.Frame(tab)
     status_frame.pack(fill=tk.X)
     status_label = tk.Label(
-        status_frame, text=status_text, anchor="w",
-        fg=("#D97706" if file_result["status"] == "结果未生成"
-            else "#B42318" if file_result["status"] == "失败" else "#111827")
+        status_frame,
+        text=_status_text(snapshot),
+        anchor="w",
+        fg=_status_color(snapshot),
     )
     status_label.pack(fill=tk.X, padx=8, pady=(0, 4))
     file_result["status_label"] = status_label
-    if "consignee_manual_value" not in file_result:
-        file_result["consignee_manual_value"] = ""
-    hidden_fields = get_preview_hidden_fields(select_text)
-    header_values = _header_values_from_rows(
-        file_result.get("rows") or [], headers, header_fields, hidden_fields
-    )
-    if select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单"):
-        header_values["客商编码"] = ""
-    if not header_values.get("订单类型"):
-        prior_order_type = file_result.get("header_values", {}).get("订单类型", "")
-        if prior_order_type in get_order_type_labels(select_text):
-            header_values["订单类型"] = prior_order_type
-        else:
-            default_label = get_default_order_type_label(select_text)
-            if default_label:
-                header_values["订单类型"] = default_label
-    file_result["header_values"] = header_values
+    header_fields, detail_fields = get_preview_layout(select_text)
+    header_values = dict(snapshot.header_values)
 
     tk.Label(tab, text="单据头", anchor="w",
              font=SECTION_FONT).pack(fill=tk.X, padx=8, pady=(0, 2))
@@ -2253,50 +2278,24 @@ def _build_file_tab(file_result, headers, header_fields, detail_fields,
         fg=MEDICAL_DEVICE_WARNING_COLOR,
     )
     file_result["medical_warning_label"] = medical_warning_label
-    detail_rows, preview_groups = _detail_rows_from_full_rows(
-        file_result.get("rows") or [], file_result.get("split_groups") or [],
-        headers, detail_fields
-    )
-
-    def refresh_medical_device_display():
-        _refresh_file_medical_device_display(
-            file_result, select_text, detail_fields
-        )
 
     detail_panel, detail_tree = _build_scrolled_preview_tree(
         tab,
         detail_fields,
-        detail_rows,
-        preview_groups,
-        on_change=refresh_medical_device_display,
+        snapshot,
+        on_command=_handle_preview_tree_command,
     )
     detail_panel.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
 
     file_result["tree"] = detail_tree
     file_result["tab"] = tab
-    refresh_medical_device_display()
+    _refresh_file_medical_device_display(
+        file_result, snapshot, select_text
+    )
     return detail_tree
 
 
-def _refresh_file_status_label(file_result):
-    """按文件最新状态刷新页签顶部状态文案。"""
-    status_label = file_result.get("status_label")
-    if status_label is None:
-        return
-    status_text = f"状态：{file_result['status']}"
-    if not file_result.get("rows"):
-        status_text += "；当前无明细数据"
-    if file_result.get("message"):
-        status_text += f"；{file_result['message']}"
-    status_label.config(
-        text=status_text,
-        fg=("#D97706" if file_result["status"] == "结果未生成"
-            else "#B42318" if file_result["status"] == "失败" else "#111827"),
-    )
-
-
-def _replace_file_tab(file_result, headers, header_fields, detail_fields,
-                      select_text):
+def _replace_file_tab(file_result, select_text):
     """重建单个文件页签，保留原页签位置与选中状态。"""
     global active_tree
     old_tab = file_result["tab"]
@@ -2305,7 +2304,9 @@ def _replace_file_tab(file_result, headers, header_fields, detail_fields,
     active_tree = None
     old_tab.destroy()
     _build_file_tab(
-        file_result, headers, header_fields, detail_fields, select_text,
+        file_result,
+        preview_table.snapshot(file_result["document_id"]),
+        select_text,
         add_tab=False,
     )
     if preview_notebook.tabs():
@@ -2340,7 +2341,6 @@ def create_blank_preview(select_text):
     """创建当前模板的空白可编辑页签，用于不选择文件的手工填写。"""
     global preview_select_text, preview_files, active_tree
     headers = get_core_headers(select_text)
-    header_fields, detail_fields = get_preview_layout(select_text)
     file_result = {
         "filename": MANUAL_FILENAME,
         "status": MANUAL_STATUS,
@@ -2351,10 +2351,16 @@ def create_blank_preview(select_text):
         "manual": True,
     }
     preview_select_text = select_text
-    preview_files = [file_result]
+    _replace_preview_table(select_text, headers, [file_result])
+    preview_files = [_new_preview_file_info(
+        preview_table.snapshot("document-1"),
+        file_result,
+    )]
     active_tree = None
     _build_file_tab(
-        file_result, headers, header_fields, detail_fields, select_text
+        preview_files[0],
+        preview_table.snapshot("document-1"),
+        select_text,
     )
     preview_notebook.select(0)
     on_preview_tab_changed()
@@ -2391,13 +2397,22 @@ def show_preview(select_text, headers, file_results,
     preview_select_text = select_text
 
     for info in preview_files:
-        info["tab"].destroy()
-    preview_files = list(file_results)
+        if info.get("tab") is not None:
+            info["tab"].destroy()
+    _replace_preview_table(select_text, headers, file_results)
+    table_snapshot = preview_table.snapshot_table()
+    preview_files = [
+        _new_preview_file_info(snapshot, raw_file_result)
+        for snapshot, raw_file_result in zip(
+            table_snapshot.documents, file_results
+        )
+    ]
     active_tree = None
-    header_fields, detail_fields = get_preview_layout(select_text)
-    for file_result in preview_files:
+    for info, snapshot in zip(preview_files, table_snapshot.documents):
         _build_file_tab(
-            file_result, headers, header_fields, detail_fields, select_text
+            info,
+            snapshot,
+            select_text,
         )
 
     if preview_notebook.tabs():
@@ -2406,9 +2421,10 @@ def show_preview(select_text, headers, file_results,
     mock_check.config(state=tk.NORMAL)
     btn.config(text="选择文件并开始处理", state=tk.NORMAL)
     abort_btn.config(state=tk.DISABLED)
-    total_rows = sum(len(info.get("rows") or []) for info in preview_files)
+    total_rows = sum(len(snapshot.lines) for snapshot in table_snapshot.documents)
     pending_count = sum(
-        info["status"] == "结果未生成" for info in preview_files
+        snapshot.metadata.status == preview_model.PENDING
+        for snapshot in table_snapshot.documents
     )
     print_log(f"预览数据就绪：模板 {select_text}，页签数 {len(preview_files)}，"
               f"明细行数 {total_rows}，"
@@ -2426,9 +2442,12 @@ def on_preview_tab_changed(_event=None):
             active_tree.clear_clipboard()
         active_tree = info["tree"]
         current_file_label.config(text=f"当前预览文件：{info['filename']}")
+        snapshot = _snapshot_for_info(info)
         continue_btn.config(
             state=tk.NORMAL if not continue_query_active
-            and info["status"] == "结果未生成" else tk.DISABLED
+            and snapshot is not None
+            and snapshot.metadata.status == preview_model.PENDING
+            else tk.DISABLED
         )
         refresh_export_state()
         _refresh_customer_backfill_state()
@@ -2459,12 +2478,18 @@ def refresh_row_action_state():
 
 def refresh_export_state():
     """根据所有页签当前明细行数和操作状态刷新底部按钮。"""
-    has_rows = any(bool(info["tree"].get_data()[1]) for info in preview_files)
-    active_info = _active_preview_file()
-    active_has_rows = active_info is not None and bool(
-        active_info["tree"].get_data()[1]
+    snapshots = [
+        _snapshot_for_info(info) for info in preview_files
+    ]
+    has_rows = any(
+        snapshot is not None and bool(snapshot.lines)
+        for snapshot in snapshots
     )
-    tree_editable = active_tree is not None and active_info is not None
+    active_snapshot = _active_snapshot()
+    active_has_rows = (
+        active_snapshot is not None and bool(active_snapshot.lines)
+    )
+    tree_editable = active_tree is not None and active_snapshot is not None
     refresh_row_action_state()
     export_btn.config(state=tk.NORMAL if has_rows else tk.DISABLED)
     wms_send_btn.config(
@@ -2522,10 +2547,13 @@ def active_tree_paste_row():
 
 def clear_preview():
     """清空所有预览页签并恢复初始状态。"""
-    global preview_select_text, preview_files, active_tree, continue_query_active
+    global preview_select_text, preview_files, preview_table, active_tree
+    global continue_query_active
     for info in preview_files:
-        info["tab"].destroy()
+        if info.get("tab") is not None:
+            info["tab"].destroy()
     preview_files = []
+    preview_table = None
     active_tree = None
     continue_query_active = False
     preview_select_text = ""
@@ -2544,9 +2572,14 @@ def continue_current_task():
     if continue_query_active:
         return
     info = _active_preview_file()
-    if info is None or info.get("status") != "结果未生成":
+    snapshot = _active_snapshot()
+    if (
+        info is None
+        or snapshot is None
+        or snapshot.metadata.status != preview_model.PENDING
+    ):
         return
-    req_uuid = str(info.get("req_uuid", "")).strip()
+    req_uuid = str(snapshot.metadata.req_uuid).strip()
     if not req_uuid:
         messagebox.showwarning("温馨提示", "当前文件缺少原任务 reqUuid，无法继续查询")
         return
@@ -2562,7 +2595,14 @@ def continue_current_task():
     )
     continue_thread = threading.Thread(
         target=continue_task_worker,
-        args=(info, preview_select_text, req_uuid, abort_event),
+        args=(
+            snapshot.document_id,
+            snapshot.metadata.filename,
+            preview_select_text,
+            req_uuid,
+            snapshot.metadata.log_row,
+            abort_event,
+        ),
         daemon=True,
     )
     continue_thread.start()
@@ -2570,9 +2610,10 @@ def continue_current_task():
     win.after(100, poll_ui_queue)
 
 
-def continue_task_worker(info, select_text, req_uuid, cancel_event):
+def continue_task_worker(
+    document_id, filename, select_text, req_uuid, log_row, cancel_event
+):
     """后台继续查询原 OCR 任务，成功后解析并回传预览刷新消息。"""
-    filename = info["filename"]
     print_log(f"继续查询原任务 reqUuid={req_uuid}，文件：{filename}")
     try:
         _, ocr_result_dict = call_get_result_api(req_uuid, cancel_event)
@@ -2584,7 +2625,7 @@ def continue_task_worker(info, select_text, req_uuid, cancel_event):
         parsed_rows, split_groups = parse_commit_result(
             select_text, commit_result, filename
         )
-        updated_log_row = list(info.get("log_row", []))
+        updated_log_row = list(log_row)
         if len(updated_log_row) > 6:
             updated_log_row[5] = "成功"
             updated_log_row[6] = "处理成功"
@@ -2597,30 +2638,56 @@ def continue_task_worker(info, select_text, req_uuid, cancel_event):
         ).start()
         print_log(f"✅ [{filename}] 继续查询成功")
         ui_message_queue.put((
-            "continue_success", info, select_text, "成功", "处理成功",
-            parsed_rows, split_groups, updated_log_row,
+            "continue_success",
+            document_id,
+            select_text,
+            parsed_rows,
+            split_groups,
+            tuple(updated_log_row),
         ))
     except OCRResultTimeout:
         print_log(f"⏳ [{filename}] 继续查询5分钟仍未生成结果")
         ui_message_queue.put((
-            "continue_pending", info,
+            "continue_pending",
+            document_id,
             "再次查询5分钟仍未生成结果，可继续查询原任务",
         ))
     except OCRAborted:
         print_log(f"⏹ [{filename}] 继续查询已由用户中止")
-        ui_message_queue.put(("continue_aborted", info))
+        ui_message_queue.put(("continue_aborted", document_id))
     except Exception as e:
         print_log(f"❌ [{filename}] 继续查询失败：{e}")
         ui_message_queue.put((
-            "continue_pending", info, f"继续查询失败：{e}",
+            "continue_pending",
+            document_id,
+            f"继续查询失败：{e}",
         ))
 
 
-def _apply_continue_success(info, select_text):
+def _apply_continue_success(
+    document_id, select_text, parsed_rows, split_groups, updated_log_row
+):
     """按续查成功结果重建对应页签，并刷新可编辑/导出状态。"""
-    headers = get_core_headers(select_text)
-    header_fields, detail_fields = get_preview_layout(select_text)
-    _replace_file_tab(info, headers, header_fields, detail_fields, select_text)
+    old_snapshot = preview_table.snapshot(document_id)
+    preview_table.replace_document(
+        document_id,
+        preview_model.DocumentInput(
+            metadata=preview_model.DocumentMetadata(
+                document_id=document_id,
+                filename=old_snapshot.metadata.filename,
+                status=preview_model.SUCCESS,
+                message="处理成功",
+                req_uuid=old_snapshot.metadata.req_uuid,
+                log_row=tuple(updated_log_row),
+                manual=False,
+            ),
+            rows=tuple(tuple(row) for row in parsed_rows),
+            split_groups=tuple(split_groups),
+        ),
+    )
+    info = _preview_file_info(document_id)
+    if info is not None:
+        _replace_file_tab(info, select_text)
     refresh_export_state()
 
 
@@ -2639,71 +2706,55 @@ def _manual_export_base_name(select_text, header_values):
     return value or MANUAL_FILENAME
 
 
-def _missing_consignee_files(file_results):
-    """返回包含医疗器械但未填写客商编码的文件名。"""
-    missing_files = []
-    for info in file_results:
-        _, detail_rows = info["tree"].get_data()
-        if (
-            detail_rows
-            and info.get("medical_device_present")
-            and not str(
-                info.get("header_values", {}).get("客商编码", "")
-            ).strip()
-        ):
-            missing_files.append(info["filename"])
-    return missing_files
+def _blocking_issue_files(target):
+    """按校验原因汇总所有有明细预览单据中的阻塞问题文件名。"""
+    blocking_files = {}
+    for info in preview_files:
+        snapshot = _snapshot_for_info(info)
+        if snapshot is None or not snapshot.lines:
+            continue
+        for issue in preview_table.validate(snapshot.document_id, target):
+            if issue.severity != preview_model.BLOCKING:
+                continue
+            blocking_files.setdefault(issue.code, []).append(
+                snapshot.metadata.filename
+            )
+    return blocking_files
 
 
 def start_export():
     """选择导出目录后收集有明细的文件页签并启动批量导出线程。"""
-    missing_files = []
-    for info in preview_files:
-        _, detail_rows = info["tree"].get_data()
-        if detail_rows and not str(
-            info.get("header_values", {}).get("订单类型", "")
-        ).strip():
-            missing_files.append(info["filename"])
-    if missing_files:
-        messagebox.showwarning(
-            "温馨提示",
-            "以下文件请先选择订单类型：\n" + "\n".join(missing_files),
-        )
-        return
-
-    missing_tracking_files = []
-    if preview_select_text == "GE-发票单":
-        for info in preview_files:
-            _, detail_rows = info["tree"].get_data()
-            if detail_rows and not str(
-                info.get("header_values", {}).get("运单号", "")
-            ).strip():
-                missing_tracking_files.append(info["filename"])
-    if missing_tracking_files:
-        messagebox.showwarning(
-            "温馨提示",
-            "以下文件请先填写运单号：\n" + "\n".join(missing_tracking_files),
-        )
-        return
-
-    if preview_select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单"):
-        missing_consignee_files = _missing_consignee_files(preview_files)
-        if missing_consignee_files:
+    blocking_files = _blocking_issue_files(preview_model.EXPORT)
+    validation_messages = (
+        ("order_type_required", "以下文件请先选择订单类型：\n"),
+        ("waybill_required", "以下文件请先填写运单号：\n"),
+        ("consignee_required", "以下文件请先填写客商编码：\n"),
+    )
+    for code, message in validation_messages:
+        filenames = blocking_files.get(code)
+        if filenames:
             messagebox.showwarning(
                 "温馨提示",
-                "以下文件请先填写客商编码：\n"
-                + "\n".join(missing_consignee_files),
+                message + "\n".join(filenames),
             )
             return
-
     export_targets = []
     for info in preview_files:
-        _, detail_rows = info["tree"].get_data()
-        if detail_rows:
-            full_rows = merge_preview_rows(
-                preview_select_text, info["header_values"], detail_rows
-            )
-            export_targets.append((info, full_rows))
+        snapshot = _snapshot_for_info(info)
+        if snapshot is None or not snapshot.lines:
+            continue
+        full_rows = merge_preview_rows(
+            preview_select_text,
+            snapshot.header_values,
+            tuple(line.values for line in snapshot.lines),
+        )
+        export_targets.append({
+            "filename": snapshot.metadata.filename,
+            "manual": snapshot.metadata.manual,
+            "header_values": snapshot.header_values,
+            "log_row": snapshot.metadata.log_row,
+            "rows": tuple(tuple(row) for row in full_rows),
+        })
     if not export_targets:
         messagebox.showwarning("温馨提示", "没有可导出的明细数据")
         return
@@ -2719,25 +2770,28 @@ def start_export():
     export_btn.config(state=tk.DISABLED)
     global export_thread
     export_thread = threading.Thread(
-        target=export_worker, args=(export_targets, output_dir), daemon=True
+        target=export_worker,
+        args=(export_targets, output_dir, preview_select_text),
+        daemon=True,
     )
     export_thread.start()
     refresh_export_state()
     win.after(100, poll_ui_queue)
 
 
-def export_worker(export_targets, output_dir):
+def export_worker(export_targets, output_dir, select_text):
     """后台逐文件导出 Excel 到指定目录，汇总成功和失败消息。"""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     exported = []
     failures = []
-    for info, rows in export_targets:
-        if info.get("manual"):
+    for target in export_targets:
+        filename = target["filename"]
+        if target["manual"]:
             base_name = _manual_export_base_name(
-                preview_select_text, info.get("header_values", {})
+                select_text, target["header_values"]
             )
         else:
-            base_name = os.path.splitext(os.path.basename(info["filename"]))[0]
+            base_name = os.path.splitext(os.path.basename(filename))[0]
         output_file = os.path.join(
             output_dir, f"{base_name}_识别结果_{timestamp}.xlsx"
         )
@@ -2749,13 +2803,16 @@ def export_worker(export_targets, output_dir):
             suffix += 1
         try:
             export_excel(
-                preview_select_text, rows, [info["log_row"]], output_file
+                select_text,
+                target["rows"],
+                [target["log_row"]],
+                output_file,
             )
             exported.append(os.path.basename(output_file))
         except PermissionError:
-            failures.append(f"{info['filename']}：文件被占用")
+            failures.append(f"{filename}：文件被占用")
         except Exception as e:
-            failures.append(f"{info['filename']}：{e}")
+            failures.append(f"{filename}：{e}")
 
     if not exported and failures:
         ui_message_queue.put(("export_error", "Excel导出失败！\n" + "\n".join(failures)))
@@ -3162,49 +3219,52 @@ def open_wms_send_window():
         "GE-发票单", "GE-ORACLE拣货单", "GE-OSCAR拣货单"
     ):
         return
-    info = _active_preview_file()
-    if info is None:
+    snapshot = _active_snapshot()
+    if snapshot is None:
         return
-    _, detail_rows = info["tree"].get_data()
-    if not detail_rows:
-        messagebox.showwarning("温馨提示", "当前单据没有可发送的明细数据")
-        return
-    header_values = info.get("header_values", {})
-    if not str(header_values.get("订单类型", "")).strip():
-        messagebox.showwarning("温馨提示", "当前单据请先选择订单类型")
-        return
-    if (
-        preview_select_text in ("GE-ORACLE拣货单", "GE-OSCAR拣货单")
-        and _missing_consignee_files([info])
-    ):
-        messagebox.showwarning(
-            "温馨提示",
-            "请先填写客商编码：\n" + info["filename"],
+    blocking_codes = {
+        issue.code
+        for issue in preview_table.validate(
+            snapshot.document_id, preview_model.WMS_SEND
         )
-        return
+        if issue.severity == preview_model.BLOCKING
+    }
+    validation_messages = (
+        ("no_exportable_lines", "当前单据没有可发送的明细数据"),
+        ("order_type_required", "当前单据请先选择订单类型"),
+        (
+            "consignee_required",
+            "请先填写客商编码：\n" + snapshot.metadata.filename,
+        ),
+        ("waybill_required", "当前发票缺少运单号，无法发送"),
+        ("invoice_no_required", "当前发票缺少INVOICE NO，无法发送"),
+        (
+            "order_number_required",
+            "当前ORACLE拣货单缺少Order Number，无法发送",
+        ),
+        (
+            "service_request_no_required",
+            "当前OSCAR拣货单缺少服务申请号，无法发送",
+        ),
+    )
+    for code, message in validation_messages:
+        if code in blocking_codes:
+            messagebox.showwarning("温馨提示", message)
+            return
+
+    header_values = snapshot.header_values
+    detail_rows = tuple(line.values for line in snapshot.lines)
     if preview_select_text == "GE-发票单":
-        if not str(header_values.get("运单号", "")).strip():
-            messagebox.showwarning("温馨提示", "当前发票缺少运单号，无法发送")
-            return
-        if not str(header_values.get("INVOICE NO", "")).strip():
-            messagebox.showwarning("温馨提示", "当前发票缺少INVOICE NO，无法发送")
-            return
         payload = build_put_purchase_order_payload(header_values, detail_rows)
         send_func = send_put_purchase_order
         log_name = "采购订单"
     elif preview_select_text == "GE-ORACLE拣货单":
-        if not str(header_values.get("Order Number", "")).strip():
-            messagebox.showwarning("温馨提示", "当前ORACLE拣货单缺少Order Number，无法发送")
-            return
         payload = build_put_original_sales_order_payload(
             preview_select_text, header_values, detail_rows
         )
         send_func = send_put_original_sales_order
         log_name = "ORACLE销售订单"
     else:
-        if not str(header_values.get("服务申请号", "")).strip():
-            messagebox.showwarning("温馨提示", "当前OSCAR拣货单缺少服务申请号，无法发送")
-            return
         payload = build_put_original_sales_order_payload(
             preview_select_text, header_values, detail_rows
         )
@@ -3393,29 +3453,38 @@ def poll_ui_queue():
             refresh_export_state()
             messagebox.showerror("错误", payload[0])
         elif kind == "continue_aborted":
-            info = payload[0]
-            info["message"] = "继续查询已中止"
+            document_id = payload[0]
+            preview_table.update_status(
+                document_id,
+                preview_model.PENDING,
+                "继续查询已中止",
+            )
             continue_query_active = False
             abort_event.clear()
-            _refresh_file_status_label(info)
+            _render_preview_document(document_id)
             on_preview_tab_changed()
             finish_abort_state()
         elif kind == "continue_success":
-            (info, select_text, status, message, parsed_rows,
-             split_groups, updated_log_row) = payload
-            info["status"] = status
-            info["message"] = message
-            info["rows"] = parsed_rows
-            info["split_groups"] = split_groups
-            info["log_row"] = updated_log_row
+            (document_id, select_text, parsed_rows, split_groups,
+             updated_log_row) = payload
             continue_query_active = False
-            _apply_continue_success(info, select_text)
+            _apply_continue_success(
+                document_id,
+                select_text,
+                parsed_rows,
+                split_groups,
+                updated_log_row,
+            )
             set_progress_state(100, "处理进度：续查完成")
         elif kind == "continue_pending":
-            info, message = payload
-            info["message"] = message
+            document_id, message = payload
+            preview_table.update_status(
+                document_id,
+                preview_model.PENDING,
+                message,
+            )
             continue_query_active = False
-            _refresh_file_status_label(info)
+            _render_preview_document(document_id)
             on_preview_tab_changed()
             set_progress_state(100, "处理进度：续查未生成结果", "#D97706")
         elif kind == "medical_device_catalog":

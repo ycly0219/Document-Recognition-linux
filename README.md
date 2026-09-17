@@ -86,7 +86,8 @@
 - 程序启动时默认按当前系统最大可用工作区显示，Windows 使用系统最大化，Linux 使用兼容的最大窗口方式，避免旧固定窗口尺寸挤压顶部布局
 - 主界面默认不显示处理日志，释放纵向空间给预览明细表格；底部「删除行」右侧依次提供「查询日志」「查询医疗器械」「查询客商」「新增产品」入口，点击「查询日志」打开独立可滚动日志窗口查看并实时追加本次运行日志
 - 日志统一走标准 `logging`，不再覆盖标准输出
-- 代码按模块拆分：`tool.py` 作为入口，`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 报文发送、医疗器械目录查询缓存和客商查询
+- 当前会话的全部预览单据、选中状态、拆分分组、编辑命令与撤销记录由无 Tk 的 `preview_table.PreviewTable` 权威模型持有；`tool.py` 中的 Tk 控件只渲染不可变快照并转发编辑、插入、粘贴、删除和撤销命令，导出与 WMS 报文使用同一份快照与校验结果
+- 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 报文发送、医疗器械目录查询缓存和客商查询
 - 支持 PyInstaller onedir 打包为 Windows 无控制台程序，Excel 模板随包分发；导出目录每次由人工选择，并默认打开上次选择的目录
 - Windows 打包版预览表格切换 `clam` 主题保证斑马色行背景显示，并使用 Windows 可读表头字号
 
@@ -212,6 +213,8 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-17: [变更] 全部预览单据状态迁移到无 Tk 的 `PreviewTable` 权威模型，Tk 仅渲染只读快照并转发编辑、选择与剪贴板命令；导出和 WMS 发送统一读取模型快照与校验问题，续查成功按原单据 ID 替换内容
+- 2026-09-17: [修复] 批量导出忽略无明细的空页签，不再因任一空页签误报“没有可导出的明细数据”；仅当整批预览都没有可导出行时才提示
 - 2026-09-15: [新增] 「查询医疗器械」与「查询客商」列表支持点击单元格后通过 `Ctrl/Cmd+C` 或右键「复制单元格」复制当前显示值；复制为只读操作，刷新或关闭窗口后不保留旧单元格，状态栏提示约两秒
 - 2026-09-15: [新增] 底部「查询医疗器械」右侧新增「查询客商」非模态窗口，调用 `QUERYCO` 展示客商编码、名称、地址、联系人和电话，支持编码/名称实时模糊搜索、重新查询、失败保留列表及选中客商回填
 - 2026-09-15: [变更] ORACLE/OSCAR 拣货单 `客商编码` 改为始终只读，只能从「查询客商」窗口双击或点击「使用选中客商」回填；回填仅覆盖当前命中医疗器械页签的客商编码，原有导出校验和 WMS 发送逻辑保持不变
