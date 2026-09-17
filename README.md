@@ -87,7 +87,8 @@
 - 主界面默认不显示处理日志，释放纵向空间给预览明细表格；底部「删除行」右侧依次提供「查询日志」「查询医疗器械」「查询客商」「新增产品」入口，点击「查询日志」打开独立可滚动日志窗口查看并实时追加本次运行日志
 - 日志统一走标准 `logging`，不再覆盖标准输出
 - 当前会话的全部预览单据、选中状态、拆分分组、编辑命令与撤销记录由无 Tk 的 `preview_table.PreviewTable` 权威模型持有；`tool.py` 中的 Tk 控件只渲染不可变快照并转发编辑、插入、粘贴、删除和撤销命令，导出与 WMS 报文使用同一份快照与校验结果
-- 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 报文发送、医疗器械目录查询缓存和客商查询
+- 单据快照到导出或接口发送的校验、订单类型与日期等语义归一化、字段映射和 artifact 构建统一由 `delivery_preparation.prepare_delivery()` 完成；`document_template.py` 定义单据模板 schema 与语义归一化规则，`excel_export.py` / `wms_client.py` 仅作为目标 adapter，Tk 只负责界面编排与提示
+- 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`document_template.py`、`delivery_preparation.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、单据模板规则、交付准备、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 请求发送、医疗器械目录查询缓存和客商查询
 - 支持 PyInstaller onedir 打包为 Windows 无控制台程序，Excel 模板随包分发；导出目录每次由人工选择，并默认打开上次选择的目录
 - Windows 打包版预览表格切换 `clam` 主题保证斑马色行背景显示，并使用 Windows 可读表头字号
 
@@ -180,15 +181,16 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 配置说明
 
-当前配置集中在 `config.py`：
+当前地址、凭据与业务映射按职责分布在使用模块中：
 
 - OCR 接口地址、上传接口、结果查询接口
 - OCR App 凭据、组织号、模板对应的 `modelId`
 - OCR 最长轮询等待秒数 `OCR_MAX_POLL_SECONDS=300`、轮询间隔 `OCR_RETRY_INTERVAL=5`（原有 `OCR_MAX_RETRY` 保留）
 - 飞书 App 凭据、多维表格记录写入地址、每个成功文件写入次数 `FEISHU_CALL_TIMES=3`
-- 三种单据的 `订单类型` 选项、默认值和导出代码集中在 `config.py`；后续扩展只需在对应模板的 `ORDER_TYPE_OPTIONS_BY_TEMPLATE` 映射中新增一项，并按需调整 `DEFAULT_ORDER_TYPE_BY_TEMPLATE`
-- Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射集中在 `wms_client.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
-- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射集中在 `wms_client.py`，`consigneeId` 统一读取单据头 `客商编码` 并以 `CONSIGNEEID` 回退
+- 三种单据的 `订单类型` 选项、默认值、导出代码、预览/导出行结构和日期、状态、客商编码等语义归一化集中在 `document_template.py`；后续扩展只需调整对应模板定义
+- 单据快照的 `EXPORT` / `WMS_SEND` 校验与 artifact 构建集中在 `delivery_preparation.py`；`excel_export.py` 与 `wms_client.py` 不再重复执行模板字段映射
+- Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射在 `delivery_preparation.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
+- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射在 `delivery_preparation.py`，`consigneeId` 统一读取单据头 `客商编码` 并以 `CONSIGNEEID` 回退
 - Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
 - Flux WMS `QUERYMD` 医疗器械目录查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，目录记录缓存读取、覆盖和物料编码匹配集中在 `medical_device_client.py`
 - Flux WMS `QUERYCO` 客商查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，请求、回告解析、列表转换和本地过滤集中在 `customer_client.py`
@@ -209,10 +211,12 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - 切换模板规则会直接清空当前预览页签，无确认弹窗；手工填写内容未导出时会丢失，建议后续增加确认或草稿保护。
 - WMS 接口地址为 QAS 测试环境，真实内网联通性需在现场验证。
 - Flux WMS `putOriginalSalesOrder` 已接入 QAS 接口发送，但正式联调时应确认 `consigneeContact`、`consigneeTel1`、`userDefine`、`dedi04-20` 等字段语义和 QAS 与生产接口差异。
+- `delivery_preparation.py` 只返回校验问题代码，`tool.py` 仍负责把代码映射为界面提示；新增校验问题时需同步补充界面文案。
 - 医疗器械目录查询失败时会回退到用户主目录缓存；首次运行、缓存缺失/损坏且接口不可用时无法判定医疗器械范围，此时不显示提示也不标红明细，`客商编码` 不要求填写并回退 `CONSIGNEEID`。旧版纯 SKU 缓存可以继续参与匹配，但五个属性在列表中显示空白，直至下一次成功刷新。
 
 ## 更新记录
 
+- 2026-09-17: [变更] 新增 `delivery_preparation.py` 与 `document_template.py`，把单据快照到 Excel/WMS 的目标校验、语义归一化、字段映射和 artifact 构建集中到 `prepare_delivery()`；`excel_export.py` / `wms_client.py` 改为只负责写入或发送，Tk 只保留界面编排与提示，并新增交付准备与 Excel 链路回归测试
 - 2026-09-17: [变更] ORACLE/OSCAR 客商编码回填状态迁入 `PreviewTable`：模型分别持有隐藏回填值和派生的有效客商编码，医疗器械命中时决定可否回填，外部单据头输入和直接 `update_header` 写入不再生效；目录刷新、页签重建及续查替换保留回填值，导出、校验和 WMS 发送统一读取有效值
 - 2026-09-17: [变更] 全部预览单据状态迁移到无 Tk 的 `PreviewTable` 权威模型，Tk 仅渲染只读快照并转发编辑、选择与剪贴板命令；导出和 WMS 发送统一读取模型快照与校验问题，续查成功按原单据 ID 替换内容
 - 2026-09-17: [修复] 批量导出忽略无明细的空页签，不再因任一空页签误报“没有可导出的明细数据”；仅当整批预览都没有可导出行时才提示

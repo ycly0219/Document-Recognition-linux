@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from parsers import get_default_order_type_label
+from document_template import get_default_order_type_label
 
 
 SUCCESS = "success"
@@ -11,14 +11,7 @@ FAILED = "failed"
 PENDING = "pending"
 MANUAL = "manual"
 
-EXPORT = "export"
-WMS_SEND = "wms_send"
-
-BLOCKING = "blocking"
-WARNING = "warning"
-
 _VALID_STATUSES = frozenset({SUCCESS, FAILED, PENDING, MANUAL})
-_VALID_TARGETS = frozenset({EXPORT, WMS_SEND})
 _UNDO_LIMIT = 20
 _CONSIGNEE_TEMPLATES = frozenset({
     "GE-ORACLE拣货单",
@@ -90,6 +83,7 @@ class DocumentSnapshot:
     medical_device_present: bool
     consignee_backfill_allowed: bool
     can_undo: bool
+    template: str = ""
 
     @property
     def document_id(self):
@@ -106,18 +100,6 @@ class PreviewTableSnapshot:
     detail_fields: tuple
     active_document_id: str
     documents: tuple
-
-
-@dataclass(frozen=True)
-class ValidationIssue:
-    """预览单据不能直接执行目标动作的原因。"""
-
-    document_id: str
-    target: str
-    code: str
-    severity: str
-    field: str = ""
-    line_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -467,6 +449,7 @@ class PreviewTable:
                 document, medical_present
             ),
             can_undo=bool(document.undo_stack),
+            template=self.template,
         )
 
     def _command_result(self, document, selection_hint=(), can_undo=None):
@@ -733,85 +716,3 @@ class PreviewTable:
         """替换医疗器械 SKU 目录并重算全部预览单据。"""
         self._catalog_skus = self._normalize_catalog_skus(catalog_skus)
         return self.snapshot_table()
-
-    def _header_requirements(self, document, target):
-        required_by_field = {}
-        if "订单类型" in self.header_fields:
-            required_by_field["订单类型"] = "order_type_required"
-        if self.template == "GE-发票单":
-            if "运单号" in self.header_fields:
-                required_by_field["运单号"] = "waybill_required"
-            if target == WMS_SEND and "INVOICE NO" in self.header_fields:
-                required_by_field["INVOICE NO"] = "invoice_no_required"
-        if target == WMS_SEND:
-            if (
-                self.template == "GE-ORACLE拣货单"
-                and "Order Number" in self.header_fields
-            ):
-                required_by_field["Order Number"] = (
-                    "order_number_required"
-                )
-            if (
-                self.template == "GE-OSCAR拣货单"
-                and "服务申请号" in self.header_fields
-            ):
-                required_by_field["服务申请号"] = (
-                    "service_request_no_required"
-                )
-
-        medical_present = bool(self._medical_device_line_ids(document))
-        if (
-            medical_present
-            and self.template in ("GE-ORACLE拣货单", "GE-OSCAR拣货单")
-            and "客商编码" in self.header_fields
-        ):
-            required_by_field["客商编码"] = "consignee_required"
-
-        effective_header_values = dict(document.header_values)
-        if (
-            self.template in _CONSIGNEE_TEMPLATES
-            and "客商编码" in effective_header_values
-        ):
-            effective_header_values["客商编码"] = (
-                self._effective_consignee_id(document, medical_present)
-            )
-
-        issues = []
-        for field in self.header_fields:
-            code = required_by_field.get(field)
-            if not code:
-                continue
-            if not _text(effective_header_values.get(field, "")).strip():
-                issues.append(ValidationIssue(
-                    document_id=document.metadata.document_id,
-                    target=target,
-                    code=code,
-                    severity=BLOCKING,
-                    field=field,
-                ))
-        return issues, medical_present
-
-    def validate(self, document_id, target):
-        """校验单据能否执行指定目标动作。"""
-        if target not in _VALID_TARGETS:
-            raise ValueError(f"未知校验目标: {target}")
-        document = self._require_document(document_id)
-        if not document.lines:
-            return (ValidationIssue(
-                document_id=document.metadata.document_id,
-                target=target,
-                code="no_exportable_lines",
-                severity=BLOCKING,
-            ),)
-
-        issues, medical_present = self._header_requirements(
-            document, target
-        )
-        if medical_present:
-            issues.append(ValidationIssue(
-                document_id=document.metadata.document_id,
-                target=target,
-                code="medical_device_present",
-                severity=WARNING,
-            ))
-        return tuple(issues)

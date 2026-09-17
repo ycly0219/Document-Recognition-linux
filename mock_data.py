@@ -1,7 +1,9 @@
 """演示用固定样例数据，结构与真实解析结果一致，不调用接口。"""
 
-from config import DEFAULT_ORDER_TYPE_BY_TEMPLATE
-from parsers import get_core_headers
+from document_template import (
+    get_core_headers,
+    get_default_order_type_label,
+)
 
 
 def generate_mock_data(select_text):
@@ -50,7 +52,7 @@ def generate_mock_data(select_text):
              "DEVICE-002", "SR-002", "TR-0003"]
         ]
     elif select_text == "GE-发票单":
-        default_label = DEFAULT_ORDER_TYPE_BY_TEMPLATE["GE-发票单"]
+        default_label = get_default_order_type_label("GE-发票单")
         # 前两行演示 LPN/Serial 按数量拆分后的效果
         rows = [
             [default_label, "WB20260821-001", "INV20260821-01", "ITEM-INV-001", "1", "LPN-1", "", "LOT-01",

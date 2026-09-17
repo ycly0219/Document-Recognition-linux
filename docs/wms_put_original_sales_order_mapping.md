@@ -1,6 +1,6 @@
 # Flux WMS `putOriginalSalesOrder` 字段映射
 
-本文档约定 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 导出的销售订单 Excel 字段与 Flux WMS `putOriginalSalesOrder` 报文字段的映射关系。当前已按本规则在 `wms_client.py` 实现报文构建与接口发送，并由 `tool.py` 的「接口发送」入口调用。
+本文档约定 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 导出的销售订单 Excel 字段与 Flux WMS `putOriginalSalesOrder` 报文字段的映射关系。当前已按本规则在 `delivery_preparation.py` 构建报文，由 `wms_client.py` 发送，并由 `tool.py` 的「接口发送」入口调用。
 
 接口地址： WMS_URL = ("[https://sinoewms-qas.i.sinotrans.com/datahubjson/FluxWmsJsonApi_WJC/](https://sinoewms-qas.i.sinotrans.com/datahubjson/FluxWmsJsonApi_WJC/)"
 "?method=putOriginalSalesOrder&apptoken=0B61B741BB1970A66A63DD653A131D68"

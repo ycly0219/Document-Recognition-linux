@@ -18,11 +18,24 @@ from customer_client import (
     filter_customer_record_display_rows,
     query_customer_records,
 )
+from delivery_preparation import (
+    BLOCKING,
+    EXPORT,
+    WMS_SEND,
+    prepare_delivery,
+)
+from document_template import (
+    get_core_headers,
+    get_default_order_type_label,
+    get_order_type_labels,
+    get_preview_layout,
+    get_preview_wide_fields,
+)
 from excel_export import (
-    export_excel,
     get_last_export_dir,
     get_output_dir,
     save_last_export_dir,
+    write_export,
 )
 from feishu_client import get_tenant_access_token, send_to_bitable_repeated
 from logging_utils import log_queue, print_log
@@ -43,24 +56,13 @@ from ocr_client import (
     call_process_api,
     upload_file_to_server,
 )
-from parsers import (
-    get_core_headers,
-    get_default_order_type_label,
-    get_order_type_labels,
-    get_preview_layout,
-    get_preview_wide_fields,
-    merge_preview_rows,
-    parse_commit_result,
-)
+from parsers import parse_commit_result
 import preview_table as preview_model
 from wms_client import (
-    build_put_original_sales_order_payload,
-    build_put_purchase_order_payload,
     build_put_sku_payload,
     format_wms_response,
     is_wms_send_success,
-    send_put_original_sales_order,
-    send_put_purchase_order,
+    send_wms_request,
     send_put_sku,
     validate_put_sku_form,
 )
@@ -2674,21 +2676,6 @@ def _apply_continue_success(
     refresh_export_state()
 
 
-def _manual_export_base_name(select_text, header_values):
-    """根据手工空白页所属模板取单据编号作为导出基准名。"""
-    field_by_template = {
-        "GE-ORACLE拣货单": "Order Number",
-        "GE-OSCAR拣货单": "服务申请号",
-        "GE-发票单": "INVOICE NO",
-    }
-    value = str(
-        header_values.get(field_by_template.get(select_text, ""), "")
-    ).strip()
-    for char in ("\\", "/", ":", "*", "?", '"', "<", ">", "|"):
-        value = value.replace(char, "_")
-    return value or MANUAL_FILENAME
-
-
 def _blocking_issue_files(target):
     """按校验原因汇总所有有明细预览单据中的阻塞问题文件名。"""
     blocking_files = {}
@@ -2696,8 +2683,8 @@ def _blocking_issue_files(target):
         snapshot = _snapshot_for_info(info)
         if snapshot is None or not snapshot.lines:
             continue
-        for issue in preview_table.validate(snapshot.document_id, target):
-            if issue.severity != preview_model.BLOCKING:
+        for issue in prepare_delivery(snapshot, target).issues:
+            if issue.severity != BLOCKING:
                 continue
             blocking_files.setdefault(issue.code, []).append(
                 snapshot.metadata.filename
@@ -2707,7 +2694,7 @@ def _blocking_issue_files(target):
 
 def start_export():
     """选择导出目录后收集有明细的文件页签并启动批量导出线程。"""
-    blocking_files = _blocking_issue_files(preview_model.EXPORT)
+    blocking_files = _blocking_issue_files(EXPORT)
     validation_messages = (
         ("order_type_required", "以下文件请先选择订单类型：\n"),
         ("waybill_required", "以下文件请先填写运单号：\n"),
@@ -2726,17 +2713,10 @@ def start_export():
         snapshot = _snapshot_for_info(info)
         if snapshot is None or not snapshot.lines:
             continue
-        full_rows = merge_preview_rows(
-            preview_select_text,
-            snapshot.header_values,
-            tuple(line.values for line in snapshot.lines),
-        )
+        prepared = prepare_delivery(snapshot, EXPORT).artifact
         export_targets.append({
             "filename": snapshot.metadata.filename,
-            "manual": snapshot.metadata.manual,
-            "header_values": snapshot.header_values,
-            "log_row": snapshot.metadata.log_row,
-            "rows": tuple(tuple(row) for row in full_rows),
+            "artifact": prepared,
         })
     if not export_targets:
         messagebox.showwarning("温馨提示", "没有可导出的明细数据")
@@ -2754,7 +2734,7 @@ def start_export():
     global export_thread
     export_thread = threading.Thread(
         target=export_worker,
-        args=(export_targets, output_dir, preview_select_text),
+        args=(export_targets, output_dir),
         daemon=True,
     )
     export_thread.start()
@@ -2762,19 +2742,15 @@ def start_export():
     win.after(100, poll_ui_queue)
 
 
-def export_worker(export_targets, output_dir, select_text):
+def export_worker(export_targets, output_dir):
     """后台逐文件导出 Excel 到指定目录，汇总成功和失败消息。"""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     exported = []
     failures = []
     for target in export_targets:
         filename = target["filename"]
-        if target["manual"]:
-            base_name = _manual_export_base_name(
-                select_text, target["header_values"]
-            )
-        else:
-            base_name = os.path.splitext(os.path.basename(filename))[0]
+        artifact = target["artifact"]
+        base_name = artifact.output_base_name
         output_file = os.path.join(
             output_dir, f"{base_name}_识别结果_{timestamp}.xlsx"
         )
@@ -2785,12 +2761,7 @@ def export_worker(export_targets, output_dir, select_text):
             )
             suffix += 1
         try:
-            export_excel(
-                select_text,
-                target["rows"],
-                [target["log_row"]],
-                output_file,
-            )
+            write_export(artifact, output_file)
             exported.append(os.path.basename(output_file))
         except PermissionError:
             failures.append(f"{filename}：文件被占用")
@@ -3205,12 +3176,11 @@ def open_wms_send_window():
     snapshot = _active_snapshot()
     if snapshot is None:
         return
+    preparation = prepare_delivery(snapshot, WMS_SEND)
     blocking_codes = {
         issue.code
-        for issue in preview_table.validate(
-            snapshot.document_id, preview_model.WMS_SEND
-        )
-        if issue.severity == preview_model.BLOCKING
+        for issue in preparation.issues
+        if issue.severity == BLOCKING
     }
     validation_messages = (
         ("no_exportable_lines", "当前单据没有可发送的明细数据"),
@@ -3235,23 +3205,15 @@ def open_wms_send_window():
             messagebox.showwarning("温馨提示", message)
             return
 
-    header_values = snapshot.header_values
-    detail_rows = tuple(line.values for line in snapshot.lines)
-    if preview_select_text == "GE-发票单":
-        payload = build_put_purchase_order_payload(header_values, detail_rows)
-        send_func = send_put_purchase_order
+    prepared_request = preparation.artifact
+    if prepared_request is None:
+        return
+    payload = prepared_request.payload
+    if snapshot.template == "GE-发票单":
         log_name = "采购订单"
-    elif preview_select_text == "GE-ORACLE拣货单":
-        payload = build_put_original_sales_order_payload(
-            preview_select_text, header_values, detail_rows
-        )
-        send_func = send_put_original_sales_order
+    elif snapshot.template == "GE-ORACLE拣货单":
         log_name = "ORACLE销售订单"
     else:
-        payload = build_put_original_sales_order_payload(
-            preview_select_text, header_values, detail_rows
-        )
-        send_func = send_put_original_sales_order
         log_name = "OSCAR销售订单"
     if wms_window is not None:
         try:
@@ -3309,7 +3271,7 @@ def open_wms_send_window():
         )
         wms_thread = threading.Thread(
             target=wms_send_worker,
-            args=(payload, token, send_func, log_name),
+            args=(prepared_request, token, log_name),
             daemon=True,
         )
         wms_thread.start()
@@ -3346,11 +3308,11 @@ def open_wms_send_window():
     wms_window_response_text.yview_moveto(0)
 
 
-def wms_send_worker(payload, token, send_func, log_name):
+def wms_send_worker(prepared_request, token, log_name):
     """后台发送 WMS 报文，并把回告文本回传主线程。"""
     print_log(f"正在发送WMS{log_name}报文...")
     try:
-        response = send_func(payload)
+        response = send_wms_request(prepared_request)
         text = format_wms_response(response)
         print_log(f"WMS接口回告：{text[:200]}")
         success = is_wms_send_success(response)
