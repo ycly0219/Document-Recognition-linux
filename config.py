@@ -80,6 +80,10 @@ WMS_QUERY_MEDICAL_DEVICE_URL = (
     "https://sinoewms-qas.i.sinotrans.com/datahubjson/"
     "FLUXWMSUDF_E841_GEHC/?method=QUERYMD"
 )
+WMS_QUERY_CUSTOMER_URL = (
+    "https://sinoewms-qas.i.sinotrans.com/datahubjson/"
+    "FLUXWMSUDF_E841_GEHC/?method=QUERYCO"
+)
 WMS_CUSTOMER_ID = "GEHC"
 WMS_PUT_SKU_CUSTOMER_IDS = (
     WMS_CUSTOMER_ID,

@@ -12,6 +12,12 @@ import tkinter.font as tkfont
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from config import FEISHU_CALL_TIMES, MODEL_MAP
+from customer_client import (
+    CUSTOMER_COLUMNS,
+    customer_record_display_rows,
+    filter_customer_record_display_rows,
+    query_customer_records,
+)
 from excel_export import (
     export_excel,
     get_last_export_dir,
@@ -103,9 +109,25 @@ medical_device_status_label = None
 medical_device_refresh_button = None
 medical_device_sort_column = None
 medical_device_sort_stage = 0
+medical_device_copy_status_after_id = None
+customer_records = []
+customer_query_thread = None
+customer_query_pending = False
+customer_query_lock = threading.Lock()
+customer_query_active = False
+customer_query_status = "尚未查询客商信息"
+customer_window = None
+customer_tree = None
+customer_code_search_var = None
+customer_name_search_var = None
+customer_status_label = None
+customer_use_button = None
+customer_refresh_button = None
+customer_copy_status_after_id = None
 
 MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
 MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
+COPY_STATUS_DURATION_MS = 2000
 MEDICAL_DEVICE_COLUMNS = (
     "产品编码",
     "是否序列号控制",
@@ -517,6 +539,103 @@ class EditableTreeview(ttk.Treeview):
 
         visit("")
         return headers, rows
+
+
+class CopyableTreeview(ttk.Treeview):
+    """只读列表，支持通过快捷键或右键菜单复制当前单元格。"""
+
+    def __init__(self, master, on_copy_status=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self._copied_cell = None
+        self._on_copy_status = on_copy_status
+        self._copy_menu = tk.Menu(self, tearoff=0)
+        self._copy_menu.add_command(
+            label="复制单元格", command=self._copy_remembered_cell
+        )
+        self.bind(
+            "<ButtonPress-1>", self._remember_clicked_cell, add="+"
+        )
+        self.bind(
+            "<Control-c>", self._copy_remembered_cell
+        )
+        self.bind(
+            "<Command-c>", self._copy_remembered_cell
+        )
+        self.bind("<Button-2>", self._show_copy_menu, add="+")
+        self.bind("<Button-3>", self._show_copy_menu, add="+")
+
+    def clear_copied_cell(self):
+        """清除已记录的单元格，避免复制刷新前的旧内容。"""
+        self._copied_cell = None
+
+    def _remember_clicked_cell(self, event):
+        if self._remember_event_cell(event):
+            self.focus_set()
+
+    def _remember_event_cell(self, event):
+        if self.identify("region", event.x, event.y) != "cell":
+            self.clear_copied_cell()
+            return False
+        row_id = self.identify_row(event.y)
+        column_token = self.identify_column(event.x)
+        columns = self["columns"]
+        try:
+            column_index = int(column_token.replace("#", "")) - 1
+        except ValueError:
+            self.clear_copied_cell()
+            return False
+        if not row_id or column_index < 0 or column_index >= len(columns):
+            self.clear_copied_cell()
+            return False
+        self._copied_cell = (row_id, columns[column_index])
+        return True
+
+    def _show_copy_menu(self, event):
+        if not self._remember_event_cell(event):
+            return "break"
+        try:
+            self._copy_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._copy_menu.grab_release()
+        return "break"
+
+    def _copy_remembered_cell(self, _event=None):
+        if self._copied_cell is None:
+            self._notify_copy_status(
+                "请先点击要复制的单元格", error=True
+            )
+            return "break"
+
+        row_id, column_id = self._copied_cell
+        try:
+            if (
+                not self.exists(row_id)
+                or column_id not in self["columns"]
+            ):
+                raise tk.TclError("单元格已刷新")
+            value = self.set(row_id, column_id)
+            self.clipboard_clear()
+            self.clipboard_append(value)
+        except tk.TclError:
+            self.clear_copied_cell()
+            self._notify_copy_status(
+                "请先点击要复制的单元格", error=True
+            )
+            return "break"
+
+        title = str(self.heading(column_id, "text"))
+        for suffix in (" ↑", " ↓"):
+            if title.endswith(suffix):
+                title = title[:-len(suffix)]
+                break
+        self._notify_copy_status(
+            f"已复制：{title} {value}", error=False
+        )
+        return "break"
+
+    def _notify_copy_status(self, message, error=False):
+        if self._on_copy_status is not None:
+            self._on_copy_status(message, error)
 
 
 def _append_line_to_log_window(line):
@@ -1092,7 +1211,7 @@ def _refresh_file_medical_device_display(
         consignee_label.config(
             font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
         )
-        consignee_entry.config(state=tk.NORMAL)
+        consignee_entry.config(state=tk.DISABLED)
         consignee_value_var.set(manual_value)
         header_values["客商编码"] = manual_value
     else:
@@ -1100,12 +1219,66 @@ def _refresh_file_medical_device_display(
         consignee_entry.config(state=tk.DISABLED)
         consignee_value_var.set("CONSIGNEEID")
         header_values["客商编码"] = "CONSIGNEEID"
+    _refresh_customer_backfill_state()
+
+
+def _render_medical_device_window_status(text, error=False):
+    if medical_device_status_label is None:
+        return
+    try:
+        if medical_device_status_label.winfo_exists():
+            medical_device_status_label.config(
+                text=text,
+                fg="#B42318" if error else "#475569",
+            )
+    except tk.TclError:
+        pass
+
+
+def _cancel_medical_device_copy_status_timer():
+    global medical_device_copy_status_after_id
+    if medical_device_copy_status_after_id is None:
+        return
+    try:
+        win.after_cancel(medical_device_copy_status_after_id)
+    except (tk.TclError, ValueError):
+        pass
+    medical_device_copy_status_after_id = None
+
+
+def _restore_medical_device_copy_status():
+    global medical_device_copy_status_after_id
+    medical_device_copy_status_after_id = None
+    _render_medical_device_window_status(
+        medical_device_catalog_refresh_status
+    )
+
+
+def _show_medical_device_copy_status(message, error=False):
+    global medical_device_copy_status_after_id
+    _cancel_medical_device_copy_status_timer()
+    if medical_device_status_label is None:
+        return
+    try:
+        if not medical_device_status_label.winfo_exists():
+            return
+        medical_device_status_label.config(
+            text=message,
+            fg="#B42318" if error else "#067647",
+        )
+    except tk.TclError:
+        return
+    medical_device_copy_status_after_id = win.after(
+        COPY_STATUS_DURATION_MS,
+        _restore_medical_device_copy_status,
+    )
 
 
 def _set_medical_device_refresh_state(active, status):
     """同步医疗器械窗口的查询状态和重新查询按钮。"""
     global medical_device_catalog_refresh_active
     global medical_device_catalog_refresh_status
+    _cancel_medical_device_copy_status_timer()
     medical_device_catalog_refresh_active = active
     medical_device_catalog_refresh_status = status
     if medical_device_refresh_button is not None:
@@ -1120,7 +1293,9 @@ def _set_medical_device_refresh_state(active, status):
     if medical_device_status_label is not None:
         try:
             if medical_device_status_label.winfo_exists():
-                medical_device_status_label.config(text=status)
+                medical_device_status_label.config(
+                    text=status, fg="#475569"
+                )
         except tk.TclError:
             pass
 
@@ -1151,6 +1326,7 @@ def _refresh_medical_device_window():
                 rows, medical_device_sort_column, descending=True
             )
 
+    medical_device_tree.clear_copied_cell()
     medical_device_tree.delete(*medical_device_tree.get_children())
     for row in rows:
         medical_device_tree.insert("", tk.END, values=row)
@@ -1188,6 +1364,7 @@ def close_medical_device_window():
     global medical_device_search_var, medical_device_status_label
     global medical_device_refresh_button, medical_device_sort_column
     global medical_device_sort_stage
+    _cancel_medical_device_copy_status_timer()
     if medical_device_window is not None:
         try:
             medical_device_window.destroy()
@@ -1289,12 +1466,13 @@ def open_medical_device_window():
         f"medical_device_column_{index}"
         for index in range(len(MEDICAL_DEVICE_COLUMNS))
     )
-    medical_device_tree = ttk.Treeview(
+    medical_device_tree = CopyableTreeview(
         table_frame,
         columns=column_ids,
         show="headings",
         selectmode="browse",
         style="Preview.Treeview",
+        on_copy_status=_show_medical_device_copy_status,
     )
     vertical_scrollbar = ttk.Scrollbar(
         table_frame, orient="vertical", command=medical_device_tree.yview
@@ -1392,6 +1570,419 @@ def _start_medical_device_catalog_refresh(reason):
     _set_medical_device_refresh_state(
         True, "正在查询医疗器械信息..."
     )
+    win.after(100, poll_ui_queue)
+
+
+def _render_customer_window_status(text, error=False):
+    if customer_status_label is None:
+        return
+    try:
+        if customer_status_label.winfo_exists():
+            customer_status_label.config(
+                text=text,
+                fg="#B42318" if error else "#475569",
+            )
+    except tk.TclError:
+        pass
+
+
+def _cancel_customer_copy_status_timer():
+    global customer_copy_status_after_id
+    if customer_copy_status_after_id is None:
+        return
+    try:
+        win.after_cancel(customer_copy_status_after_id)
+    except (tk.TclError, ValueError):
+        pass
+    customer_copy_status_after_id = None
+
+
+def _restore_customer_copy_status():
+    global customer_copy_status_after_id
+    customer_copy_status_after_id = None
+    _render_customer_window_status(customer_query_status)
+
+
+def _show_customer_copy_status(message, error=False):
+    global customer_copy_status_after_id
+    _cancel_customer_copy_status_timer()
+    if customer_status_label is None:
+        return
+    try:
+        if not customer_status_label.winfo_exists():
+            return
+        customer_status_label.config(
+            text=message,
+            fg="#B42318" if error else "#067647",
+        )
+    except tk.TclError:
+        return
+    customer_copy_status_after_id = win.after(
+        COPY_STATUS_DURATION_MS,
+        _restore_customer_copy_status,
+    )
+
+
+def _set_customer_window_status(text, error=False):
+    """更新客商窗口状态栏，不弹模态错误框。"""
+    _cancel_customer_copy_status_timer()
+    _render_customer_window_status(text, error)
+
+
+def _customer_backfill_error():
+    """返回当前页签不允许回填客商编码的原因。"""
+    if preview_select_text not in (
+        "GE-ORACLE拣货单", "GE-OSCAR拣货单"
+    ):
+        return "当前单据模板不支持回填客商编码"
+    info = _active_preview_file()
+    if info is None:
+        return "请先选择 ORACLE 或 OSCAR 拣货单页签"
+    if not info.get("medical_device_present"):
+        return "当前页签未命中医疗器械，不能回填客商编码"
+    return ""
+
+
+def _selected_customer_code():
+    """返回客商列表当前选中行的客商编码。"""
+    if customer_tree is None:
+        return ""
+    try:
+        if not customer_tree.winfo_exists():
+            return ""
+        selection = customer_tree.selection()
+    except tk.TclError:
+        return ""
+    if not selection:
+        return ""
+    values = customer_tree.item(selection[0], "values")
+    return str(values[0]).strip() if values else ""
+
+
+def _refresh_customer_backfill_state():
+    """按当前页签与选中行刷新「使用选中客商」按钮。"""
+    if customer_use_button is None:
+        return
+    try:
+        if not customer_use_button.winfo_exists():
+            return
+        enabled = (
+            bool(_selected_customer_code())
+            and not _customer_backfill_error()
+        )
+        customer_use_button.config(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+    except tk.TclError:
+        pass
+
+
+def _refresh_customer_window():
+    """按两个搜索框的当前值刷新客商列表。"""
+    if customer_tree is None:
+        return
+    try:
+        if not customer_tree.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    rows = customer_record_display_rows(customer_records)
+    customer_code = (
+        customer_code_search_var.get()
+        if customer_code_search_var is not None else ""
+    )
+    customer_name = (
+        customer_name_search_var.get()
+        if customer_name_search_var is not None else ""
+    )
+    rows = filter_customer_record_display_rows(
+        rows, customer_code, customer_name
+    )
+
+    customer_tree.clear_copied_cell()
+    customer_tree.delete(*customer_tree.get_children())
+    for row in rows:
+        customer_tree.insert("", tk.END, values=row)
+    _refresh_customer_backfill_state()
+
+
+def _on_customer_search_changed(*_args):
+    """客商编码或名称发生变化时立即本地过滤。"""
+    _refresh_customer_window()
+
+
+def _on_customer_selection_changed(_event=None):
+    """刷新当前选中客商是否可回填。"""
+    _refresh_customer_backfill_state()
+
+
+def _use_selected_customer():
+    """把选中客商编码回填到执行操作时的当前预览页签。"""
+    error = _customer_backfill_error()
+    if error:
+        _set_customer_window_status(error, error=True)
+        return
+    customer_id = _selected_customer_code()
+    if not customer_id:
+        _set_customer_window_status("请先选择一条客商记录", error=True)
+        return
+    info = _active_preview_file()
+    if info is None:
+        _set_customer_window_status(
+            "请先选择 ORACLE 或 OSCAR 拣货单页签", error=True
+        )
+        return
+
+    info["consignee_manual_value"] = customer_id
+    info.setdefault("header_values", {})["客商编码"] = customer_id
+    value_var = info.get("consignee_value_var")
+    if value_var is not None:
+        value_var.set(customer_id)
+    entry = info.get("consignee_entry")
+    if entry is not None:
+        entry.config(state=tk.DISABLED)
+    label = info.get("consignee_label")
+    if label is not None:
+        label.config(
+            font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
+        )
+    close_customer_window()
+
+
+def _on_customer_row_double_click(event):
+    """双击客商行时按当前页签校验后回填。"""
+    if customer_tree is None:
+        return
+    row_id = customer_tree.identify_row(event.y)
+    if not row_id:
+        return
+    customer_tree.selection_set(row_id)
+    customer_tree.focus(row_id)
+    _use_selected_customer()
+
+
+def close_customer_window():
+    """关闭客商窗口并允许下次打开时重新查询。"""
+    global customer_window, customer_tree, customer_code_search_var
+    global customer_name_search_var, customer_status_label
+    global customer_use_button, customer_refresh_button
+    _cancel_customer_copy_status_timer()
+    if customer_window is not None:
+        try:
+            customer_window.destroy()
+        except tk.TclError:
+            pass
+    customer_window = None
+    customer_tree = None
+    customer_code_search_var = None
+    customer_name_search_var = None
+    customer_status_label = None
+    customer_use_button = None
+    customer_refresh_button = None
+
+
+def open_customer_window():
+    """打开或聚焦非模态客商查询窗口。"""
+    global customer_window, customer_tree, customer_code_search_var
+    global customer_name_search_var, customer_status_label
+    global customer_use_button, customer_refresh_button
+    if customer_window is not None:
+        try:
+            if customer_window.winfo_exists():
+                customer_window.deiconify()
+                customer_window.lift()
+                customer_window.focus_force()
+                return
+        except tk.TclError:
+            customer_window = None
+            customer_tree = None
+
+    width, height = 1050, 620
+    win.update_idletasks()
+    parent_x = win.winfo_rootx()
+    parent_y = win.winfo_rooty()
+    parent_width = win.winfo_width()
+    parent_height = win.winfo_height()
+    x = parent_x + max((parent_width - width) // 2, 0)
+    y = parent_y + max((parent_height - height) // 2, 0)
+
+    customer_window = tk.Toplevel(win)
+    customer_window.title("查询客商")
+    customer_window.geometry(f"{width}x{height}+{x}+{y}")
+    customer_window.minsize(760, 420)
+    customer_window.transient(win)
+    customer_window.protocol("WM_DELETE_WINDOW", close_customer_window)
+
+    body = tk.Frame(customer_window)
+    body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    search_frame = tk.Frame(body)
+    search_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(
+        search_frame, text="客商编码", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    customer_code_search_var = tk.StringVar()
+    code_entry = tk.Entry(
+        search_frame, textvariable=customer_code_search_var,
+        font=BODY_FONT,
+    )
+    code_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+    tk.Label(
+        search_frame, text="客商名称", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    customer_name_search_var = tk.StringVar()
+    name_entry = tk.Entry(
+        search_frame, textvariable=customer_name_search_var,
+        font=BODY_FONT,
+    )
+    name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    customer_code_search_var.trace_add(
+        "write", _on_customer_search_changed
+    )
+    customer_name_search_var.trace_add(
+        "write", _on_customer_search_changed
+    )
+
+    footer = tk.Frame(body)
+    footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+    customer_status_label = tk.Label(
+        footer,
+        text=customer_query_status,
+        font=BODY_FONT,
+        anchor="w",
+        fg="#475569",
+    )
+    customer_status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    tk.Button(
+        footer, text="关闭", command=close_customer_window,
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
+    customer_refresh_button = tk.Button(
+        footer, text="重新查询",
+        command=lambda: _start_customer_query("手动重新查询"),
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    customer_refresh_button.pack(side=tk.RIGHT, padx=(0, 15))
+    customer_use_button = tk.Button(
+        footer, text="使用选中客商", command=_use_selected_customer,
+        padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+        activebackground="#155E75", activeforeground="#111827",
+        disabledforeground=DISABLED_FOREGROUND,
+        state=tk.DISABLED,
+    )
+    customer_use_button.pack(side=tk.RIGHT, padx=(0, 15))
+
+    table_frame = tk.Frame(body)
+    table_frame.pack(fill=tk.BOTH, expand=True)
+    column_ids = tuple(
+        f"customer_column_{index}"
+        for index in range(len(CUSTOMER_COLUMNS))
+    )
+    customer_tree = CopyableTreeview(
+        table_frame,
+        columns=column_ids,
+        show="headings",
+        selectmode="browse",
+        style="Preview.Treeview",
+        on_copy_status=_show_customer_copy_status,
+    )
+    vertical_scrollbar = ttk.Scrollbar(
+        table_frame, orient="vertical", command=customer_tree.yview
+    )
+    horizontal_scrollbar = ttk.Scrollbar(
+        table_frame, orient="horizontal", command=customer_tree.xview
+    )
+    customer_tree.configure(
+        yscrollcommand=vertical_scrollbar.set,
+        xscrollcommand=horizontal_scrollbar.set,
+    )
+    customer_tree.grid(row=0, column=0, sticky="nsew")
+    vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+    horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+    table_frame.rowconfigure(0, weight=1)
+    table_frame.columnconfigure(0, weight=1)
+    customer_tree.bind(
+        "<<TreeviewSelect>>", _on_customer_selection_changed
+    )
+    customer_tree.bind(
+        "<Double-1>", _on_customer_row_double_click
+    )
+
+    column_widths = (140, 220, 300, 110, 140)
+    for index, title in enumerate(CUSTOMER_COLUMNS):
+        customer_tree.heading(column_ids[index], text=title, anchor="center")
+        customer_tree.column(
+            column_ids[index],
+            width=column_widths[index],
+            minwidth=90,
+            stretch=True,
+            anchor="center" if index < 2 else "w",
+        )
+
+    _set_customer_query_state(
+        customer_query_active, customer_query_status
+    )
+    _refresh_customer_window()
+    code_entry.focus_set()
+    _start_customer_query("打开窗口")
+
+
+def _set_customer_query_state(active, status):
+    """同步客商窗口的查询状态和重新查询按钮。"""
+    global customer_query_active, customer_query_status
+    customer_query_active = active
+    customer_query_status = status
+    if customer_refresh_button is not None:
+        try:
+            if customer_refresh_button.winfo_exists():
+                customer_refresh_button.config(
+                    state=tk.DISABLED if active else tk.NORMAL,
+                    text="查询中..." if active else "重新查询",
+                )
+        except tk.TclError:
+            pass
+    _set_customer_window_status(status)
+    _refresh_customer_backfill_state()
+
+
+def _customer_query_worker(reason):
+    """后台查询客商，失败时只回传错误并保留当前列表。"""
+    print_log(f"正在查询客商信息：{reason}")
+    with customer_query_lock:
+        try:
+            records = query_customer_records()
+        except Exception as exc:
+            print_log(f"客商信息查询失败：{exc}")
+            ui_message_queue.put(
+                ("customer_query_result", [], str(exc))
+            )
+            return
+    print_log(f"客商信息查询完成：{len(records)} 条")
+    ui_message_queue.put(("customer_query_result", records, ""))
+
+
+def _start_customer_query(reason):
+    """启动不阻塞主界面的客商查询。"""
+    global customer_query_thread, customer_query_pending
+    if (
+        customer_query_thread is not None
+        and customer_query_thread.is_alive()
+    ):
+        customer_query_pending = True
+    else:
+        customer_query_pending = False
+        customer_query_thread = threading.Thread(
+            target=_customer_query_worker,
+            args=(reason,),
+            daemon=True,
+        )
+        customer_query_thread.start()
+    _set_customer_query_state(True, "正在查询客商信息...")
     win.after(100, poll_ui_queue)
 
 
@@ -1557,7 +2148,12 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
                     values=order_type_labels,
                 ).pack(fill=tk.X)
             elif field == "客商编码":
-                entry = tk.Entry(cell, textvariable=value_var)
+                entry = tk.Entry(
+                    cell,
+                    textvariable=value_var,
+                    state=tk.DISABLED,
+                    disabledforeground=DISABLED_FOREGROUND,
+                )
                 entry.pack(fill=tk.X)
                 file_result["consignee_entry"] = entry
                 file_result["consignee_value_var"] = value_var
@@ -1576,7 +2172,7 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
 
 
 def _sync_header_value(file_result, field, value):
-    """保存单据头编辑值，并单独保留人工填写的客商编码。"""
+    """保存单据头编辑值，并单独保留客商查询回填的客商编码。"""
     _update_preview_header(file_result, field, value)
     if field == "客商编码" and file_result.get("medical_device_present"):
         file_result["consignee_manual_value"] = value
@@ -1835,6 +2431,7 @@ def on_preview_tab_changed(_event=None):
             and info["status"] == "结果未生成" else tk.DISABLED
         )
         refresh_export_state()
+        _refresh_customer_backfill_state()
         return
     if active_tree is not None:
         active_tree.clear_clipboard()
@@ -1842,6 +2439,7 @@ def on_preview_tab_changed(_event=None):
     current_file_label.config(text="当前预览文件：未选择")
     continue_btn.config(state=tk.DISABLED)
     refresh_export_state()
+    _refresh_customer_backfill_state()
 
 
 def refresh_row_action_state():
@@ -2766,6 +3364,7 @@ def poll_ui_queue():
     """主线程轮询处理结果消息，并驱动界面状态更新。"""
     global continue_query_active, wms_send_active, product_send_active
     global medical_device_catalog_refresh_active
+    global customer_query_active
     flush_log()
     while True:
         try:
@@ -2834,6 +3433,22 @@ def poll_ui_queue():
                     + (f"：{error_text}" if error_text else "")
                 )
             _set_medical_device_refresh_state(False, status)
+        elif kind == "customer_query_result":
+            records, error_text = payload
+            customer_query_active = False
+            if error_text:
+                status = (
+                    "查询失败，已保留当前列表"
+                    f"：{error_text}"
+                )
+            else:
+                customer_records[:] = records
+                _refresh_customer_window()
+                status = (
+                    f"查询成功，共 {len(records)} 条客商信息"
+                    if records else "查询成功，未返回客商信息"
+                )
+            _set_customer_query_state(False, status)
         elif kind == "product_send_result":
             token, success, text, medical_device = payload
             _replace_product_response(
@@ -2875,7 +3490,16 @@ def poll_ui_queue():
     ):
         _start_medical_device_catalog_refresh("处理等待中的刷新请求")
 
-    if medical_device_catalog_refresh_pending or any(
+    if customer_query_pending and (
+        customer_query_thread is None
+        or not customer_query_thread.is_alive()
+    ):
+        _start_customer_query("处理等待中的查询请求")
+
+    if (
+        medical_device_catalog_refresh_pending
+        or customer_query_pending
+        or any(
         thread is not None and thread.is_alive()
         for thread in (
             worker_thread,
@@ -2884,6 +3508,8 @@ def poll_ui_queue():
             wms_thread,
             product_thread,
             medical_device_catalog_thread,
+            customer_query_thread,
+        )
         )
     ):
         win.after(100, poll_ui_queue)
@@ -3034,6 +3660,11 @@ query_log_btn = tk.Button(
 query_log_btn.pack(side=tk.LEFT, padx=(0, 15))
 tk.Button(
     op_frame, text="查询医疗器械", command=open_medical_device_window,
+    padx=15, font=BUTTON_FONT,
+    disabledforeground=DISABLED_FOREGROUND,
+).pack(side=tk.LEFT, padx=(0, 15))
+tk.Button(
+    op_frame, text="查询客商", command=open_customer_window,
     padx=15, font=BUTTON_FONT,
     disabledforeground=DISABLED_FOREGROUND,
 ).pack(side=tk.LEFT, padx=(0, 15))

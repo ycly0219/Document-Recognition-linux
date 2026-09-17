@@ -235,6 +235,7 @@ def _build_oracle_put_original_sales_order_payload(header_values, detail_rows):
         )
         _optional_item(detail, "lotAtt09", row_map.get("Serial"))
         _optional_item(detail, "lotAtt11", row_map.get("LPN"))
+        # _optional_item(detail, "lotAtt15", row_map.get("COO"))
         _optional_item(detail, "dedi01", row_map.get("Task Id"))
         _optional_item(detail, "dedi03", row_map.get("Pick From Locator"))
         details.append(detail)
