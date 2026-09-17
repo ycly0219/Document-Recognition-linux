@@ -1097,16 +1097,11 @@ def _replace_preview_table(select_text, headers, raw_file_results):
     return preview_table
 
 
-def _new_preview_file_info(snapshot, raw_file_result=None):
+def _new_preview_file_info(snapshot):
     """创建仅保存 Tk 控件引用与展示缓存的页签包装。"""
-    raw_file_result = raw_file_result or {}
     return {
         "document_id": snapshot.document_id,
         "filename": snapshot.metadata.filename,
-        "consignee_manual_value": str(
-            raw_file_result.get("consignee_manual_value", "")
-        ),
-        "medical_device_present": False,
         "tab": None,
         "tree": None,
         "status_label": None,
@@ -1267,7 +1262,6 @@ def _refresh_file_medical_device_display(file_result, snapshot, select_text):
     else:
         warning_label.place_forget()
 
-    file_result["medical_device_present"] = has_medical_device
     consignee_entry = file_result.get("consignee_entry")
     consignee_label = file_result.get("consignee_label")
     consignee_value_var = file_result.get("consignee_value_var")
@@ -1287,23 +1281,15 @@ def _refresh_file_medical_device_display(file_result, snapshot, select_text):
         return
 
     if has_medical_device:
-        manual_value = file_result.get("consignee_manual_value", "")
-        header_value = manual_value
+        header_value = snapshot.header_values.get("客商编码", "")
         consignee_label.config(
             font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
         )
         consignee_entry.config(state=tk.DISABLED)
     else:
-        header_value = "CONSIGNEEID"
+        header_value = snapshot.header_values.get("客商编码", "")
         consignee_label.config(font=BODY_FONT, fg="#6B7280")
         consignee_entry.config(state=tk.DISABLED)
-    if preview_table is not None:
-        preview_table.update_header(
-            file_result["document_id"],
-            "客商编码",
-            header_value,
-            record_undo=False,
-        )
     consignee_value_var.set(header_value)
     _refresh_customer_backfill_state()
 
@@ -1722,7 +1708,7 @@ def _customer_backfill_error():
     if info is None:
         return "请先选择 ORACLE 或 OSCAR 拣货单页签"
     snapshot = _active_snapshot()
-    if snapshot is None or not snapshot.medical_device_present:
+    if snapshot is None or not snapshot.consignee_backfill_allowed:
         return "当前页签未命中医疗器械，不能回填客商编码"
     return ""
 
@@ -1818,13 +1804,13 @@ def _use_selected_customer():
         )
         return
 
-    info["consignee_manual_value"] = customer_id
-    preview_table.update_header(
-        info["document_id"],
-        "客商编码",
-        customer_id,
-        record_undo=False,
-    )
+    try:
+        preview_table.backfill_consignee(
+            info["document_id"], customer_id
+        )
+    except ValueError as exc:
+        _set_customer_window_status(str(exc), error=True)
+        return
     _render_preview_document(info["document_id"])
     close_customer_window()
 
@@ -2211,7 +2197,9 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
 
 
 def _sync_header_value(file_result, field, value):
-    """保存单据头编辑值，并单独保留客商查询回填的客商编码。"""
+    """保存允许编辑的单据头值。"""
+    if field == "客商编码":
+        return
     if preview_table is not None:
         preview_table.update_header(
             file_result["document_id"],
@@ -2219,8 +2207,6 @@ def _sync_header_value(file_result, field, value):
             value,
             record_undo=False,
         )
-    if field == "客商编码" and file_result.get("medical_device_present"):
-        file_result["consignee_manual_value"] = value
 
 
 def _build_header_placements(fields, wide_fields, columns=5):
@@ -2353,8 +2339,7 @@ def create_blank_preview(select_text):
     preview_select_text = select_text
     _replace_preview_table(select_text, headers, [file_result])
     preview_files = [_new_preview_file_info(
-        preview_table.snapshot("document-1"),
-        file_result,
+        preview_table.snapshot("document-1")
     )]
     active_tree = None
     _build_file_tab(
@@ -2402,10 +2387,8 @@ def show_preview(select_text, headers, file_results,
     _replace_preview_table(select_text, headers, file_results)
     table_snapshot = preview_table.snapshot_table()
     preview_files = [
-        _new_preview_file_info(snapshot, raw_file_result)
-        for snapshot, raw_file_result in zip(
-            table_snapshot.documents, file_results
-        )
+        _new_preview_file_info(snapshot)
+        for snapshot in table_snapshot.documents
     ]
     active_tree = None
     for info, snapshot in zip(preview_files, table_snapshot.documents):

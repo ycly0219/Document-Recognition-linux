@@ -20,6 +20,11 @@ WARNING = "warning"
 _VALID_STATUSES = frozenset({SUCCESS, FAILED, PENDING, MANUAL})
 _VALID_TARGETS = frozenset({EXPORT, WMS_SEND})
 _UNDO_LIMIT = 20
+_CONSIGNEE_TEMPLATES = frozenset({
+    "GE-ORACLE拣货单",
+    "GE-OSCAR拣货单",
+})
+_CONSIGNEE_ID_FALLBACK = "CONSIGNEEID"
 
 _MEDICAL_DEVICE_SKU_FIELDS = {
     "GE-发票单": "ITEM NUMBER",
@@ -83,6 +88,7 @@ class DocumentSnapshot:
     lines: tuple
     split_groups: tuple
     medical_device_present: bool
+    consignee_backfill_allowed: bool
     can_undo: bool
 
     @property
@@ -148,11 +154,19 @@ class _UndoEntry:
 
 
 class _Document:
-    def __init__(self, metadata, header_values, lines, split_groups):
+    def __init__(
+        self,
+        metadata,
+        header_values,
+        lines,
+        split_groups,
+        consignee_backfill_value="",
+    ):
         self.metadata = metadata
         self.header_values = header_values
         self.lines = lines
         self.split_groups = split_groups
+        self.consignee_backfill_value = consignee_backfill_value
         self.undo_stack = []
         self.next_line_number = len(lines) + 1
         self.next_group_number = len(split_groups) + 1
@@ -290,6 +304,11 @@ class PreviewTable:
             and not values["订单类型"].strip()
         ):
             values["订单类型"] = get_default_order_type_label(self.template)
+        if (
+            self.template in _CONSIGNEE_TEMPLATES
+            and "客商编码" in values
+        ):
+            values["客商编码"] = ""
         return values
 
     def _build_split_groups(self, raw_groups, lines):
@@ -394,8 +413,34 @@ class PreviewTable:
                 line_ids.add(line.line_id)
         return line_ids
 
+    def _effective_consignee_id(self, document, medical_present):
+        if (
+            self.template not in _CONSIGNEE_TEMPLATES
+            or "客商编码" not in self.header_fields
+        ):
+            return ""
+        if medical_present:
+            return document.consignee_backfill_value
+        return _CONSIGNEE_ID_FALLBACK
+
+    def _consignee_backfill_allowed(self, document, medical_present):
+        return (
+            self.template in _CONSIGNEE_TEMPLATES
+            and "客商编码" in self.header_fields
+            and medical_present
+        )
+
     def _snapshot_document(self, document):
         medical_line_ids = self._medical_device_line_ids(document)
+        medical_present = bool(medical_line_ids)
+        header_values = dict(document.header_values)
+        if (
+            self.template in _CONSIGNEE_TEMPLATES
+            and "客商编码" in header_values
+        ):
+            header_values["客商编码"] = self._effective_consignee_id(
+                document, medical_present
+            )
         lines = tuple(
             DetailLine(
                 line_id=line.line_id,
@@ -414,10 +459,13 @@ class PreviewTable:
         )
         return DocumentSnapshot(
             metadata=document.metadata,
-            header_values=MappingProxyType(dict(document.header_values)),
+            header_values=MappingProxyType(header_values),
             lines=lines,
             split_groups=groups,
-            medical_device_present=bool(medical_line_ids),
+            medical_device_present=medical_present,
+            consignee_backfill_allowed=self._consignee_backfill_allowed(
+                document, medical_present
+            ),
             can_undo=bool(document.undo_stack),
         )
 
@@ -504,12 +552,31 @@ class PreviewTable:
         document = self._require_document(document_id)
         if field not in self.header_fields:
             raise ValueError(f"未知单据头字段: {field}")
+        if field == "客商编码" and self.template in _CONSIGNEE_TEMPLATES:
+            raise ValueError("客商编码不能直接修改，请使用客商编码回填")
         value = _text(value)
         if document.header_values.get(field, "") == value:
             return self._command_result(document)
         if record_undo:
             self._push_undo(document, selection_hint=())
         document.header_values[field] = value
+        return self._command_result(document)
+
+    def backfill_consignee(self, document_id, customer_id):
+        """从客商查询记录回填当前预览单据的客商编码。"""
+        document = self._require_document(document_id)
+        if (
+            self.template not in _CONSIGNEE_TEMPLATES
+            or "客商编码" not in self.header_fields
+        ):
+            raise ValueError("当前单据模板不支持回填客商编码")
+        medical_present = bool(self._medical_device_line_ids(document))
+        if not medical_present:
+            raise ValueError("当前页签未命中医疗器械，不能回填客商编码")
+        customer_id = _text(customer_id).strip()
+        if not customer_id:
+            raise ValueError("客商编码不能为空")
+        document.consignee_backfill_value = customer_id
         return self._command_result(document)
 
     def update_line(self, document_id, line_id, field, value):
@@ -633,11 +700,14 @@ class PreviewTable:
     def replace_document(self, document_id, document):
         """用新识别结果替换单据内容并保留单据 ID。"""
         target_id = _require_identifier(document_id, "单据 ID")
-        self._require_document(target_id)
+        current = self._require_document(target_id)
         self._validate_document_input(document)
         if document.metadata.document_id != target_id:
             raise ValueError("替换单据必须保留原单据 ID")
         replaced = self._create_document(document)
+        replaced.consignee_backfill_value = (
+            current.consignee_backfill_value
+        )
         self._documents[target_id] = replaced
         if not self._active_document_id:
             self._active_document_id = target_id
@@ -697,12 +767,21 @@ class PreviewTable:
         ):
             required_by_field["客商编码"] = "consignee_required"
 
+        effective_header_values = dict(document.header_values)
+        if (
+            self.template in _CONSIGNEE_TEMPLATES
+            and "客商编码" in effective_header_values
+        ):
+            effective_header_values["客商编码"] = (
+                self._effective_consignee_id(document, medical_present)
+            )
+
         issues = []
         for field in self.header_fields:
             code = required_by_field.get(field)
             if not code:
                 continue
-            if not _text(document.header_values.get(field, "")).strip():
+            if not _text(effective_header_values.get(field, "")).strip():
                 issues.append(ValidationIssue(
                     document_id=document.metadata.document_id,
                     target=target,
