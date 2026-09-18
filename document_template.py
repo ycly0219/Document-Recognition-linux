@@ -35,6 +35,12 @@ _DEFAULT_ORDER_TYPE_BY_TEMPLATE = {
     "GE-发票单": "国外入库",
 }
 
+_ORACLE_MULTILINE_HEADER_FIELDS = frozenset({
+    "Ship To Address",
+    "Shipping Instruction",
+    "Special Instruction",
+})
+
 _CORE_HEADERS = {
     "GE-ORACLE拣货单": (
         "订单类型",
@@ -371,12 +377,19 @@ def _normalize_oscar_serial(value):
     return text
 
 
+def _normalize_oracle_multiline_header(value):
+    """把换行及紧邻空白合并为一个空格。"""
+    return re.sub(r"\s*[\r\n]+\s*", " ", str(value or ""))
+
+
 def _normalize_header_value(template, field, value):
     if field == "订单类型":
         return get_order_type_value(template, value)
     if field == "客商编码":
         return str(value or "").strip()
     if template == "GE-ORACLE拣货单":
+        if field in _ORACLE_MULTILINE_HEADER_FIELDS:
+            return _normalize_oracle_multiline_header(value)
         if field == "Pick Slip Print Date":
             return _normalize_oracle_datetime(value, include_time=True)
         if field == "Ordered Date":

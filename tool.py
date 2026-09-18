@@ -2543,7 +2543,14 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
         value_var = tk.StringVar(master=form, value=header_values.get(field, ""))
         if (
             (select_text == "GE-OSCAR拣货单" and field == "收货地址")
-            or (select_text == "GE-ORACLE拣货单" and field == "Ship To Address")
+            or (
+                select_text == "GE-ORACLE拣货单"
+                and field in (
+                    "Ship To Address",
+                    "Shipping Instruction",
+                    "Special Instruction",
+                )
+            )
         ):
             text_widget = tk.Text(
                 cell,

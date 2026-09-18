@@ -23,7 +23,7 @@
 - `GE-OSCAR拣货单` Excel `C` 列与 `GE-ORACLE拣货单` 一致，写所选订单类型对应的 `GNCK_*`/`GWCK_*` 代码，不再固定写 `JYCK`
 - `GE-OSCAR拣货单` Excel 导出按 `DOC_SALESORDER_HEADER_1.xlsx` 的销售订单表头模板生成；模板 Z 写入已派生的有效客商编码；模板 Z 右侧新增 AA/AB/AC 三列，分别写入 `供应商`、`收货人`、`收货人电话` 作为 `收货人名称/收货联系人/收货人电话1`，原 V/W/X（`hedi13/14/15`）不再写入数据，收货地址与明细列整体右移 3 列；状态为“好件”时写入 `GOOD`，其余状态留空；OCR 姓名写入 R 列（`hedi07`）
 - `GE-OSCAR拣货单` 明细序列号为 `N/A` 或空时，Excel 导出与接口发送均按空处理，预览保留 OCR 原文
-- `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 解析 OCR 收货地址时将连续空白（含换行）折为单个空格并去除首尾空白；预览、Excel 导出和 WMS 报文均使用清洗后的地址，人工修改后的地址保留原样
+- `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 解析 OCR 收货地址时将连续空白（含换行）折为单个空格并去除首尾空白；预览、Excel 导出和 WMS 报文均使用清洗后的地址，人工修改后的地址预览保留原样；其中 `GE-ORACLE拣货单` 导出和 WMS 前会将换行及紧邻空白合并为一个空格
 - `GE-ORACLE拣货单` Excel `V` 列复用为 `客商编码`，写入已派生的有效客商编码；不新增 Excel 物理列
 - `GE-发票单` 支持新增 `COUNTRY OF ORIGIN` 字段，识别后同步展示在预览表格并写入 Excel
 - `GE-发票单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`运单号`、`INVOICE NO`、`DATE`、`DELIVERY`、`CARRIER`、`HAWB` 顺序；Details 按 `ITEM NUMBER`、`QTY`、`LPN Number`、`Serial Number`、`LOT Number`、`Expiration Date`、`COUNTRY OF ORIGIN`、`SALES ORDER NO`、`CUSTOMER PO` 顺序
@@ -31,7 +31,7 @@
 - `GE-发票单` 单据头新增 `订单类型` 下拉框，默认“国外入库”，可选“国内采购入库”“国内外维修入库”，标题红色加粗且必填；Excel `B` 列按选择写入 `OSI`、`POIN` 或 `REPAIRIN`，不再固定为 `OSI`
 - `GE-发票单` Excel 导出时仅订单类型为“国外入库”（`OSI`）的 `AA` 列固定写 `ORACLE`，`POIN`/`REPAIRIN` 留空
 - 预览页签顶部只显示一组单据头，并按多列可编辑表单展示，不再横向平铺；单据头修改同步到所有明细行，新增明细行自动带当前单据头，Excel 导出仍使用原有完整行映射
-- 单据头预览区使用多列 `Label + Entry/Text` 表单，其中 `GE-OSCAR拣货单` 预览单据头 `收货地址`、`GE-ORACLE拣货单` 预览单据头 `Ship To Address` 均为两行可换行文本并跨两列展示；`Shipping Instruction` 与普通字段一样占一列；跨两列字段所在行 4 个字段，其他行仍为 5 个字段；字段标签字号已调大一号；明细表格在预览区宽度有空余时自动撑满列宽，字段过多时仍保留横向滚动
+- 单据头预览区使用多列 `Label + Entry/Text` 表单，其中 `GE-OSCAR拣货单` 预览单据头 `收货地址`、`GE-ORACLE拣货单` 预览单据头 `Ship To Address` 均为两行可换行文本并跨两列展示；`GE-ORACLE拣货单` 的 `Shipping Instruction`、`Special Instruction` 也为两行可换行文本但各自保持一列宽；跨两列字段所在行 4 个字段，其他行仍为 5 个字段；字段标签字号已调大一号；明细表格在预览区宽度有空余时自动撑满列宽，字段过多时仍保留横向滚动
 - 主界面操作按钮行保持固定可见，按钮按文字自然宽度排列，顶部按钮内部水平留白为 10px、相邻间距为 10px，底部按钮内部水平留白和相邻间距均为 15px；预览页签内容不再参与窗口尺寸计算，表格超高/超宽时通过内部滚动条查看
 - `GE-发票单` Excel 导出按 `DOC_PO_HEADER.xlsx` 的采购订单表头模板生成，固定值与发票字段映射自动写入
 - `GE-发票单` 仅一个 LPN（或仅一个 LPN+Serial）时保留一行并写原始 QTY，不再按 QTY 重复生成多行
@@ -222,6 +222,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 - 2026-09-18: [新增] 客商查询窗口新增地址模糊搜索及「清除」按钮，地址与客商编码、客商名称条件取交集；新增客商窗口的客商编码输入框新增「生成」按钮，可生成允许前导零的八位数字编码并避开当前列表已有编码
 - 2026-09-18: [新增] 客商查询窗口「使用选中客商」左侧新增「新增客商」；弹窗录入客商编码、名称、地址、联系人和联系人电话五项必填信息，调用 Flux WMS `putCustomer` 并展示回告，成功后后台重新查询客商列表
+- 2026-09-18: [变更] `GE-ORACLE拣货单` 预览单据头 `Shipping Instruction`、`Special Instruction` 改为两行可换行文本并保持各占一列；`Ship To Address`、`Shipping Instruction`、`Special Instruction` 在导出与 WMS 前将换行及紧邻空白合并为一个空格，预览仍保留原文
 - 2026-09-18: [新增] ORACLE/OSCAR 拣货单 `客商编码` 输入框右侧新增字段级「选择客商」按钮；医疗器械命中且未填写时标签红色加粗提示，按钮仅在可回填时启用；客商窗口按点击入口固定回填目标，切换预览页签不改变目标，重新点击入口会刷新目标文件名，无有效目标时仍可查询但不能回填
 - 2026-09-18: [变更] 三种单据 OCR 解析结果改为具名字段 `RecognitionResult`，`PreviewTable` 统一校验并投影，移除对完整行位置索引的依赖
 - 2026-09-18: [变更] `PreviewTable` 构造时直接按 `template` 取得完整字段与预览布局，移除调用方重复传递的 `full_headers` / `header_fields` / `detail_fields`，并清理预览队列和模拟数据中的冗余 `headers`
