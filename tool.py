@@ -16,6 +16,7 @@ from customer_client import (
     CUSTOMER_COLUMNS,
     customer_record_display_rows,
     filter_customer_record_display_rows,
+    generate_customer_id,
     query_customer_records,
 )
 from delivery_preparation import (
@@ -58,11 +59,14 @@ from ocr_client import (
 from parsers import parse_commit_result
 import preview_table as preview_model
 from wms_client import (
+    build_put_customer_payload,
     build_put_sku_payload,
     format_wms_response,
     is_wms_send_success,
+    send_put_customer,
     send_wms_request,
     send_put_sku,
+    validate_put_customer_form,
     validate_put_sku_form,
 )
 
@@ -95,6 +99,12 @@ product_window = None
 product_send_button = None
 product_response_text = None
 product_response_status = None
+add_customer_thread = None
+add_customer_send_active = False
+add_customer_window = None
+add_customer_send_button = None
+add_customer_response_text = None
+add_customer_response_status = None
 wms_window_response_status = None
 medical_device_catalog = []
 medical_device_skus = frozenset()
@@ -121,8 +131,10 @@ customer_window = None
 customer_tree = None
 customer_code_search_var = None
 customer_name_search_var = None
+customer_address_search_var = None
 customer_status_label = None
 customer_use_button = None
+customer_add_button = None
 customer_refresh_button = None
 customer_copy_status_after_id = None
 customer_target_document_id = ""
@@ -776,6 +788,30 @@ def _replace_product_response(token, text, state="neutral"):
         product_response_text.config(state=tk.DISABLED)
         _set_response_state(
             product_response_text, product_response_status, state
+        )
+    except tk.TclError:
+        pass
+
+
+def _replace_add_customer_response(token, text, state="neutral"):
+    """用最新客商接口回告覆盖新增客商窗口返回区。"""
+    if (
+        add_customer_response_text is None
+        or id(add_customer_response_text) != token
+    ):
+        return
+    try:
+        if not add_customer_response_text.winfo_exists():
+            return
+        add_customer_response_text.config(state=tk.NORMAL)
+        add_customer_response_text.delete("1.0", tk.END)
+        add_customer_response_text.insert(tk.END, text)
+        add_customer_response_text.yview_moveto(0)
+        add_customer_response_text.config(state=tk.DISABLED)
+        _set_response_state(
+            add_customer_response_text,
+            add_customer_response_status,
+            state,
         )
     except tk.TclError:
         pass
@@ -1834,7 +1870,7 @@ def _refresh_customer_backfill_state():
 
 
 def _refresh_customer_window():
-    """按两个搜索框的当前值刷新客商列表。"""
+    """按三个搜索框的当前值刷新客商列表。"""
     if customer_tree is None:
         return
     try:
@@ -1852,8 +1888,12 @@ def _refresh_customer_window():
         customer_name_search_var.get()
         if customer_name_search_var is not None else ""
     )
+    customer_address = (
+        customer_address_search_var.get()
+        if customer_address_search_var is not None else ""
+    )
     rows = filter_customer_record_display_rows(
-        rows, customer_code, customer_name
+        rows, customer_code, customer_name, customer_address
     )
 
     customer_tree.clear_copied_cell()
@@ -1864,7 +1904,7 @@ def _refresh_customer_window():
 
 
 def _on_customer_search_changed(*_args):
-    """客商编码或名称发生变化时立即本地过滤。"""
+    """任一客商搜索条件发生变化时立即本地过滤。"""
     _refresh_customer_window()
 
 
@@ -1907,12 +1947,245 @@ def _on_customer_row_double_click(event):
     _use_selected_customer()
 
 
+def close_add_customer_window():
+    """关闭新增客商窗口并清理界面引用。"""
+    global add_customer_window, add_customer_send_button
+    global add_customer_response_text, add_customer_response_status
+    if add_customer_window is not None:
+        try:
+            add_customer_window.destroy()
+        except tk.TclError:
+            pass
+    add_customer_window = None
+    add_customer_send_button = None
+    add_customer_response_text = None
+    add_customer_response_status = None
+
+
+def open_add_customer_window(parent=None):
+    """打开新增客商模态窗口，录入后直接发送客商主数据。"""
+    global add_customer_window, add_customer_send_button
+    global add_customer_response_text, add_customer_response_status
+    if add_customer_send_active:
+        return
+    if add_customer_window is not None:
+        try:
+            if add_customer_window.winfo_exists():
+                add_customer_window.lift()
+                add_customer_window.focus_force()
+                return
+        except tk.TclError:
+            add_customer_window = None
+    if parent is None:
+        parent = customer_window if customer_window is not None else win
+    try:
+        if not parent.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    add_customer_window = tk.Toplevel(parent)
+    add_customer_window.title("新增客商")
+    add_customer_window.geometry("720x650")
+    add_customer_window.minsize(620, 560)
+    add_customer_window.transient(parent)
+    add_customer_window.grab_set()
+    add_customer_window.protocol(
+        "WM_DELETE_WINDOW", close_add_customer_window
+    )
+
+    body = tk.Frame(add_customer_window)
+    body.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+
+    form = tk.Frame(body)
+    form.pack(fill=tk.X)
+    form.columnconfigure(0, weight=1)
+
+    customer_id_var = tk.StringVar()
+    customer_name_var = tk.StringVar()
+    contact_var = tk.StringVar()
+    contact_tel_var = tk.StringVar()
+
+    def generate_add_customer_id():
+        existing_ids = {
+            str(record.get("customerId", "")).strip()
+            for record in customer_records
+        }
+        customer_id_var.set(generate_customer_id(existing_ids))
+
+    tk.Label(
+        form, text="客商编码（必填）", fg="#B42318",
+        font=BUTTON_FONT, anchor="w",
+    ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+    customer_id_entry = tk.Entry(
+        form, textvariable=customer_id_var, font=BODY_FONT
+    )
+    customer_id_entry.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+    tk.Button(
+        form, text="生成", command=generate_add_customer_id,
+        width=8, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).grid(
+        row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 10)
+    )
+
+    tk.Label(
+        form, text="客商名称（必填）", fg="#B42318",
+        font=BUTTON_FONT, anchor="w",
+    ).grid(row=2, column=0, sticky="w", pady=(0, 4))
+    tk.Entry(
+        form, textvariable=customer_name_var, font=BODY_FONT
+    ).grid(row=3, column=0, sticky="ew", pady=(0, 10))
+
+    tk.Label(
+        form, text="客商地址（必填）", fg="#B42318",
+        font=BUTTON_FONT, anchor="w",
+    ).grid(row=4, column=0, sticky="w", pady=(0, 4))
+    address_text = tk.Text(
+        form, height=3, wrap=tk.WORD, font=BODY_FONT
+    )
+    address_text.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+
+    tk.Label(
+        form, text="联系人（必填）", fg="#B42318",
+        font=BUTTON_FONT, anchor="w",
+    ).grid(row=6, column=0, sticky="w", pady=(0, 4))
+    tk.Entry(
+        form, textvariable=contact_var, font=BODY_FONT
+    ).grid(row=7, column=0, sticky="ew", pady=(0, 10))
+
+    tk.Label(
+        form, text="联系人电话（必填）", fg="#B42318",
+        font=BUTTON_FONT, anchor="w",
+    ).grid(row=8, column=0, sticky="w", pady=(0, 4))
+    tk.Entry(
+        form, textvariable=contact_tel_var, font=BODY_FONT
+    ).grid(row=9, column=0, sticky="ew")
+
+    response_frame = tk.Frame(body)
+    response_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+    add_customer_response_text, add_customer_response_status = (
+        _wms_response_pane(response_frame, "接口返回内容")
+    )
+    add_customer_response_text.configure(height=6)
+    _replace_add_customer_response(
+        id(add_customer_response_text), "尚未发送", "neutral"
+    )
+
+    def collect_add_customer_form():
+        return {
+            "customer_id": customer_id_var.get(),
+            "customer_name": customer_name_var.get(),
+            "address": address_text.get("1.0", "end-1c"),
+            "contact": contact_var.get(),
+            "contact_tel": contact_tel_var.get(),
+        }
+
+    def clear_add_customer_form():
+        if add_customer_send_active:
+            return
+        customer_id_var.set("")
+        customer_name_var.set("")
+        address_text.delete("1.0", tk.END)
+        contact_var.set("")
+        contact_tel_var.set("")
+        _replace_add_customer_response(
+            id(add_customer_response_text), "尚未发送", "neutral"
+        )
+        add_customer_send_button.config(
+            state=tk.NORMAL, text="确认发送"
+        )
+        customer_id_entry.focus_set()
+
+    def start_add_customer_send():
+        global add_customer_thread, add_customer_send_active
+        if add_customer_send_active:
+            return
+        form_values = collect_add_customer_form()
+        error = validate_put_customer_form(form_values)
+        if error:
+            messagebox.showwarning(
+                "校验失败", error, parent=add_customer_window
+            )
+            return
+        payload = build_put_customer_payload(form_values)
+        add_customer_send_active = True
+        if customer_add_button is not None:
+            customer_add_button.config(state=tk.DISABLED)
+        add_customer_send_button.config(
+            state=tk.DISABLED, text="发送中..."
+        )
+        token = id(add_customer_response_text)
+        _replace_add_customer_response(
+            token, "发送中...\n\n正在等待接口返回。", "sending"
+        )
+        add_customer_thread = threading.Thread(
+            target=add_customer_send_worker,
+            args=(payload, token),
+            daemon=True,
+        )
+        add_customer_thread.start()
+        refresh_export_state()
+        win.after(100, poll_ui_queue)
+
+    button_frame = tk.Frame(body)
+    button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+    add_customer_send_button = tk.Button(
+        button_frame, text="确认发送", command=start_add_customer_send,
+        width=12, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
+        activebackground="#155E75", activeforeground="#111827",
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    add_customer_send_button.pack(side=tk.RIGHT, padx=(0, 8))
+    tk.Button(
+        button_frame, text="取消", command=close_add_customer_window,
+        width=10, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT, padx=(8, 0))
+    tk.Button(
+        button_frame, text="清空", command=clear_add_customer_form,
+        width=10, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
+    add_customer_window.after(100, customer_id_entry.focus_set)
+
+
+def add_customer_send_worker(payload, token):
+    """后台发送 putCustomer 客商主数据报文并回传结果。"""
+    print_log("正在发送WMS新增客商报文...")
+    try:
+        response = send_put_customer(payload)
+        text = format_wms_response(response)
+        print_log(f"WMS客商接口回告：{text[:200]}")
+        success = is_wms_send_success(response)
+        if success:
+            result_text = f"发送成功\n\n{text}"
+        else:
+            result_text = f"发送失败：HTTP 状态或 returnFlag 不满足\n\n{text}"
+        ui_message_queue.put(
+            ("add_customer_send_result", token, success, result_text)
+        )
+    except Exception as e:
+        print_log(f"WMS客商接口发送失败: {e}")
+        ui_message_queue.put(
+            (
+                "add_customer_send_result",
+                token,
+                False,
+                f"发送失败：{e}",
+            )
+        )
+
+
 def close_customer_window():
     """关闭客商窗口并允许下次打开时重新查询。"""
     global customer_window, customer_tree, customer_code_search_var
-    global customer_name_search_var, customer_status_label
-    global customer_use_button, customer_refresh_button
+    global customer_name_search_var, customer_address_search_var
+    global customer_status_label
+    global customer_use_button, customer_add_button
+    global customer_refresh_button
     global customer_target_document_id, customer_target_label
+    close_add_customer_window()
     _cancel_customer_copy_status_timer()
     if customer_window is not None:
         try:
@@ -1923,8 +2196,10 @@ def close_customer_window():
     customer_tree = None
     customer_code_search_var = None
     customer_name_search_var = None
+    customer_address_search_var = None
     customer_status_label = None
     customer_use_button = None
+    customer_add_button = None
     customer_refresh_button = None
     customer_target_document_id = ""
     customer_target_label = None
@@ -1933,8 +2208,10 @@ def close_customer_window():
 def open_customer_window(target_document_id=None):
     """打开或聚焦非模态客商查询窗口，并更新回填目标。"""
     global customer_window, customer_tree, customer_code_search_var
-    global customer_name_search_var, customer_status_label
-    global customer_use_button, customer_refresh_button
+    global customer_name_search_var, customer_address_search_var
+    global customer_status_label
+    global customer_use_button, customer_add_button
+    global customer_refresh_button
     global customer_target_label
     if target_document_id is None:
         target_document_id = _active_preview_document_id()
@@ -1999,11 +2276,38 @@ def open_customer_window(target_document_id=None):
         search_frame, textvariable=customer_name_search_var,
         font=BODY_FONT,
     )
-    name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    name_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+    tk.Label(
+        search_frame, text="地址", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    customer_address_search_var = tk.StringVar()
+    address_entry = tk.Entry(
+        search_frame, textvariable=customer_address_search_var,
+        font=BODY_FONT,
+    )
+    address_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+
+    def clear_customer_search():
+        customer_code_search_var.set("")
+        customer_name_search_var.set("")
+        customer_address_search_var.set("")
+
+    tk.Button(
+        search_frame, text="清除", command=clear_customer_search,
+        padx=12, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
     customer_code_search_var.trace_add(
         "write", _on_customer_search_changed
     )
     customer_name_search_var.trace_add(
+        "write", _on_customer_search_changed
+    )
+    customer_address_search_var.trace_add(
         "write", _on_customer_search_changed
     )
 
@@ -2037,6 +2341,13 @@ def open_customer_window(target_document_id=None):
         state=tk.DISABLED,
     )
     customer_use_button.pack(side=tk.RIGHT, padx=(0, 15))
+    customer_add_button = tk.Button(
+        footer, text="新增客商",
+        command=lambda: open_add_customer_window(customer_window),
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    customer_add_button.pack(side=tk.RIGHT, padx=(0, 15))
 
     table_frame = tk.Frame(body)
     table_frame.pack(fill=tk.BOTH, expand=True)
@@ -2429,6 +2740,10 @@ def _background_task_active():
         or (continue_thread is not None and continue_thread.is_alive())
         or (wms_thread is not None and wms_thread.is_alive())
         or (product_thread is not None and product_thread.is_alive())
+        or (
+            add_customer_thread is not None
+            and add_customer_thread.is_alive()
+        )
     )
 
 
@@ -3475,6 +3790,7 @@ def update_progress(done, total):
 def poll_ui_queue():
     """主线程轮询处理结果消息，并驱动界面状态更新。"""
     global continue_query_active, wms_send_active, product_send_active
+    global add_customer_send_active
     global medical_device_catalog_refresh_active
     global customer_query_active
     flush_log()
@@ -3588,6 +3904,29 @@ def poll_ui_queue():
                 _start_medical_device_catalog_refresh(
                     "新增医疗器械产品成功"
                 )
+        elif kind == "add_customer_send_result":
+            token, success, text = payload
+            _replace_add_customer_response(
+                token, text, "success" if success else "failure"
+            )
+            add_customer_send_active = False
+            if customer_add_button is not None:
+                try:
+                    if customer_add_button.winfo_exists():
+                        customer_add_button.config(state=tk.NORMAL)
+                except tk.TclError:
+                    pass
+            if add_customer_send_button is not None:
+                try:
+                    if add_customer_send_button.winfo_exists():
+                        add_customer_send_button.config(
+                            state=tk.NORMAL, text="重新发送"
+                        )
+                except tk.TclError:
+                    pass
+            refresh_export_state()
+            if success:
+                _start_customer_query("新增客商成功")
         elif kind == "wms_send_result":
             token, success, text = payload
             _replace_wms_response(
@@ -3627,6 +3966,7 @@ def poll_ui_queue():
             continue_thread,
             wms_thread,
             product_thread,
+            add_customer_thread,
             medical_device_catalog_thread,
             customer_query_thread,
         )

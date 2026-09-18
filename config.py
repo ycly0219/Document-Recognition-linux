@@ -45,6 +45,11 @@ WMS_PUT_SKU_URL = (
     "?method=putSKU&apptoken=0B61B741BB1970A66A63DD653A131D68"
     "&timestamp=&sign=123&format=json"
 )
+WMS_PUT_CUSTOMER_URL = (
+    "https://sinoewms-qas.i.sinotrans.com/datahubjson/FluxWmsJsonApi_WJC/"
+    "?method=putCustomer&apptoken=0B61B741BB1970A66A63DD653A131D68"
+    "&timestamp=&sign=123&format=json"
+)
 WMS_QUERY_MEDICAL_DEVICE_URL = (
     "https://sinoewms-qas.i.sinotrans.com/datahubjson/"
     "FLUXWMSUDF_E841_GEHC/?method=QUERYMD"

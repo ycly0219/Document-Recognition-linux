@@ -1,5 +1,7 @@
 """客商查询、回告解析与本地列表过滤。"""
 
+import secrets
+
 import requests
 
 from config import (
@@ -129,18 +131,31 @@ def customer_record_display_rows(records):
 
 
 def filter_customer_record_display_rows(
-    rows, customer_code="", customer_name=""
+    rows, customer_code="", customer_name="", customer_address=""
 ):
-    """按客商编码和名称做不区分大小写的包含匹配，条件间取交集。"""
+    """按客商编码、名称和地址做包含匹配，条件间取交集。"""
     code_query = str(customer_code or "").strip().casefold()
     name_query = str(customer_name or "").strip().casefold()
+    address_query = str(customer_address or "").strip().casefold()
     filtered = []
     for row in rows:
         code = str(row[0]).casefold()
         name = str(row[1]).casefold()
+        address = str(row[2]).casefold()
         if code_query and code_query not in code:
             continue
         if name_query and name_query not in name:
             continue
+        if address_query and address_query not in address:
+            continue
         filtered.append(list(row))
     return filtered
+
+
+def generate_customer_id(existing_ids=()):
+    """生成允许前导零的八位数字客商编码。"""
+    existing = {str(value).strip() for value in existing_ids}
+    while True:
+        customer_id = f"{secrets.randbelow(100_000_000):08d}"
+        if customer_id != "00000000" and customer_id not in existing:
+            return customer_id

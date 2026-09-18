@@ -7,6 +7,7 @@ import requests
 
 from config import (
     WMS_PUT_ORIGINAL_SALES_ORDER_URL,
+    WMS_PUT_CUSTOMER_URL,
     WMS_PUT_PURCHASE_ORDER_URL,
     WMS_PUT_SKU_CUSTOMER_IDS,
     WMS_PUT_SKU_URL,
@@ -113,6 +114,37 @@ def build_put_sku_payload(form):
     return {"data": {"header": headers}}
 
 
+def validate_put_customer_form(form):
+    """新增客商表单校验，返回空字符串表示通过。"""
+    fields = (
+        ("customer_id", "客商编码"),
+        ("customer_name", "客商名称"),
+        ("address", "客商地址"),
+        ("contact", "联系人"),
+        ("contact_tel", "联系人电话"),
+    )
+    for field, label in fields:
+        if not _text(form.get(field)):
+            return f"{label}不能为空"
+    return ""
+
+
+def build_put_customer_payload(form):
+    """按新增客商表单组装 Flux WMS putCustomer 报文。"""
+    header = {
+        "customerId": _text(form.get("customer_id")),
+        "customerType": "CO",
+        "customerDescr1": _text(form.get("customer_name")),
+        "address1": _text(form.get("address")),
+        "contact1": _text(form.get("contact")),
+        "contact1Tel1": _text(form.get("contact_tel")),
+        "activeFlag": "Y",
+        "refOwner": "GEHC",
+        "refWarehouseID": "WH004078",
+    }
+    return {"data": {"header": [header]}}
+
+
 def send_wms_request(prepared_request):
     """发送交付准备模块生成的 WMS 请求并返回接口响应对象。"""
     if prepared_request.method == PUT_PURCHASE_ORDER:
@@ -127,6 +159,11 @@ def send_wms_request(prepared_request):
 def send_put_sku(payload):
     """发送 putSKU 产品主数据报文并返回接口响应对象。"""
     return requests.post(WMS_PUT_SKU_URL, json=payload, timeout=30)
+
+
+def send_put_customer(payload):
+    """发送 putCustomer 客商主数据报文并返回接口响应对象。"""
+    return requests.post(WMS_PUT_CUSTOMER_URL, json=payload, timeout=30)
 
 
 def is_wms_send_success(response):
