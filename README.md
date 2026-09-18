@@ -8,7 +8,7 @@
 - 三种单据的单据头均提供必填 `订单类型` 下拉框，标题红色加粗；`GE-ORACLE拣货单` 与 `GE-OSCAR拣货单` 默认空并可选 9 项，`GE-发票单` 沿用现有 3 项且默认 `国外入库`
 - 点击「确认并导出」前会校验所有有明细文件的 `订单类型`：缺失时提示具体文件名并停止，不再继续弹出导出目录
 - `GE-ORACLE拣货单` 与 `GE-OSCAR拣货单` 在 `订单类型` 后新增 `客商编码`；控件始终只读，仅在任一明细命中医疗器械 SKU 时必填，未命中时显示 `CONSIGNEEID`
-- `客商编码` 只能通过「查询客商」窗口回填，OCR 不识别也不自动回填；每个页签独立保留已回填值，医疗器械命中状态变化时恢复该值，目录刷新会同步重算所有已打开页签；回填值、有效客商编码和可回填状态由 `PreviewTable` 权威模型持有，Tk 仅渲染快照并转发回填命令，直接修改单据头 `客商编码` 会被模型拒绝
+- `客商编码` 只能通过「查询客商」窗口回填，OCR 不识别也不自动回填；每个页签独立保留已回填值，医疗器械命中状态变化时恢复该值，目录刷新会同步重算所有已打开页签；回填值、有效客商编码（含唯一一次 `CONSIGNEEID` 回退）和可回填状态由 `PreviewTable` 权威模型持有，Tk 仅渲染快照并转发回填命令，直接修改单据头 `客商编码` 会被模型拒绝
 - 导出和接口发送前会校验医疗器械单据的 `客商编码`：去除首尾空格后为空时阻止操作，导出按文件名提示 `以下文件请先填写客商编码：`
 - `GE-ORACLE拣货单` 原始 `Item Details` 不再导出，改为提取 `LPN`、`Serial`、`Lot`、`COO` 四列；`LPN` 必有值，其余缺失时为空
 - `GE-ORACLE拣货单` 的 `Item Details` 遇到 `UN Number:` 后忽略之后内容，不再继续解析，也不导出 UN Number
@@ -20,10 +20,10 @@
 - `GE-ORACLE拣货单` 新增 `SHIP TO NO` 识别字段，预览展示在 `Ship To Address` 前，Excel 写入当前导出模板 `Y` 列（`udf01`），模板字段定义保持不变
 - `GE-OSCAR拣货单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`客商编码`、`服务申请号`、`SR编号`、`时效`、`客户/供应商`、`收货人`、`收货地址`、`收货人电话`、`申请说明`、`SSO`、`姓名`、`客户设备id` 顺序；Details 按 `物料编号`、`数量`、`序列号`、`货位`、`仓库`、`状态`、`跟踪号` 顺序
 - `GE-OSCAR拣货单` Excel `C` 列与 `GE-ORACLE拣货单` 一致，写所选订单类型对应的 `GNCK_*`/`GWCK_*` 代码，不再固定写 `JYCK`
-- `GE-OSCAR拣货单` Excel 导出按 `DOC_SALESORDER_HEADER_1.xlsx` 的销售订单表头模板生成；模板 Z 写入 `客商编码`，命中医疗器械时写查询回填值，未命中时回退 `CONSIGNEEID`；模板 Z 右侧新增 AA/AB/AC 三列，分别写入 `供应商`、`收货人`、`收货人电话` 作为 `收货人名称/收货联系人/收货人电话1`，原 V/W/X（`hedi13/14/15`）不再写入数据，收货地址与明细列整体右移 3 列；状态为“好件”时写入 `GOOD`，其余状态留空；OCR 姓名写入 R 列（`hedi07`）
+- `GE-OSCAR拣货单` Excel 导出按 `DOC_SALESORDER_HEADER_1.xlsx` 的销售订单表头模板生成；模板 Z 写入已派生的有效客商编码；模板 Z 右侧新增 AA/AB/AC 三列，分别写入 `供应商`、`收货人`、`收货人电话` 作为 `收货人名称/收货联系人/收货人电话1`，原 V/W/X（`hedi13/14/15`）不再写入数据，收货地址与明细列整体右移 3 列；状态为“好件”时写入 `GOOD`，其余状态留空；OCR 姓名写入 R 列（`hedi07`）
 - `GE-OSCAR拣货单` 明细序列号为 `N/A` 或空时，Excel 导出与接口发送均按空处理，预览保留 OCR 原文
 - `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 解析 OCR 收货地址时将连续空白（含换行）折为单个空格并去除首尾空白；预览、Excel 导出和 WMS 报文均使用清洗后的地址，人工修改后的地址保留原样
-- `GE-ORACLE拣货单` Excel `V` 列复用为 `客商编码`：命中医疗器械时写去除首尾空格后的查询回填值，未命中或空值时回退 `CONSIGNEEID`；不新增 Excel 物理列
+- `GE-ORACLE拣货单` Excel `V` 列复用为 `客商编码`，写入已派生的有效客商编码；不新增 Excel 物理列
 - `GE-发票单` 支持新增 `COUNTRY OF ORIGIN` 字段，识别后同步展示在预览表格并写入 Excel
 - `GE-发票单` 预览拆分为“单据头 + 明细”：Header 按 `订单类型`、`运单号`、`INVOICE NO`、`DATE`、`DELIVERY`、`CARRIER`、`HAWB` 顺序；Details 按 `ITEM NUMBER`、`QTY`、`LPN Number`、`Serial Number`、`LOT Number`、`Expiration Date`、`COUNTRY OF ORIGIN`、`SALES ORDER NO`、`CUSTOMER PO` 顺序
 - `GE-发票单` 单据头新增 `运单号` 文本框，位于 `订单类型` 右侧，与 `订单类型` 一样红色加粗且必填；OCR 不识别该字段，仅手工填写，也不自动复用 `HAWB`；Excel 导出写入 `G` 列，接口发送时放入 `putPurchaseOrder` 头部 `poReferenceA`
@@ -63,8 +63,8 @@
 - 新增产品时序列号/批次/效期/危险品/球管五个属性未勾选时，`putSKU` 报文的 `skuGroup1-5` 统一传 `N`；勾选时仍分别传 `SNY`/`LOTY`/`EXPY`/`HAZARDY`/`TUBE`，`freightClass` 与有效期字段保持现状
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
 - 接口发送与新增产品的返回区使用跨平台 Tk 原生全宽状态条和文本边框：发送中为蓝色、成功为绿色、失败为红色、未发送为灰色；状态条始终保留明确文字，避免仅依赖颜色判断
-- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 取 `客商编码`，为空时回退 `CONSIGNEEID`；固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
-- `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 取 `客商编码`，为空时回退 `CONSIGNEEID`；可选发送 `consigneeName=供应商`、`consigneeContact=收货人`、`consigneeTel1=收货人电话`（空值省略），不再固定 `consigneeName=虚拟收货人`、不再发送 `hedi13/14/15`，仍映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
+- `GE-ORACLE拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 读取已派生的有效客商编码；固定 `consigneeName=虚拟收货人`，并映射 `docNo=Order Number`、`soReferenceB=System Id`、`orderTime=Pick Slip Print Date`、收货地址与已定义 `hedi01/02/03/04/05/06/07/08/11/12`、`userDefine1` 字段，明细映射 `sku=Item Number`、`qtyOrdered=Qty`、`lotAtt04/05/07/08/09/11` 与 `dedi01/03`；空值字段不发送
+- `GE-OSCAR拣货单` 接口发送构建 Flux WMS `putOriginalSalesOrder` 报文：头部 `consigneeId` 读取已派生的有效客商编码；可选发送 `consigneeName=供应商`、`consigneeContact=收货人`、`consigneeTel1=收货人电话`（空值省略），不再固定 `consigneeName=虚拟收货人`、不再发送 `hedi13/14/15`，仍映射 `docNo=服务申请号`、`soReferenceA=SR编号`、`soReferenceB=客户设备id`、`orderTime=当前时间`、收货地址、申请说明与 `hedi01/05/06/07`，明细映射 `sku=物料编号`、`qtyOrdered=数量`、`lotAtt07/08/09` 与 `dedi02/03`；空值字段不发送
 - Flux WMS `putOriginalSalesOrder` 字段映射文档已同步到发送实现，覆盖 `GE-ORACLE拣货单` / `GE-OSCAR拣货单` 销售订单导出字段到报文字段的映射，详见 `docs/wms_put_original_sales_order_mapping.md`
 - 解析完成后按文件生成多个预览页签，页签只显示文件名，顶部单独展示当前预览文件，页签内显示处理状态
 - 预览表格新增界面序号，新增/删除行后自动重排，序号不写入导出的 Excel
@@ -86,7 +86,8 @@
 - 程序启动时默认按当前系统最大可用工作区显示，Windows 使用系统最大化，Linux 使用兼容的最大窗口方式，避免旧固定窗口尺寸挤压顶部布局
 - 主界面默认不显示处理日志，释放纵向空间给预览明细表格；底部「删除行」右侧依次提供「查询日志」「查询医疗器械」「查询客商」「新增产品」入口，点击「查询日志」打开独立可滚动日志窗口查看并实时追加本次运行日志
 - 日志统一走标准 `logging`，不再覆盖标准输出
-- 当前会话的全部预览单据、选中状态、拆分分组、编辑命令与撤销记录由无 Tk 的 `preview_table.PreviewTable` 权威模型持有；`tool.py` 中的 Tk 控件只渲染不可变快照并转发编辑、插入、粘贴、删除和撤销命令，导出与 WMS 报文使用同一份快照与校验结果
+- 当前会话的全部预览单据、拆分分组、编辑命令与撤销记录由无 Tk 的 `preview_table.PreviewTable` 权威模型持有；模型在构造时直接按单据模板取得完整字段与预览布局，调用方不再重复传递 schema；`tool.py` 中的 Tk 控件只渲染不可变快照并转发编辑、插入、粘贴、删除和撤销命令，当前文件页签选择由 Tk 展示层管理；导出与 WMS 报文使用同一份快照与校验结果
+- 三种单据的 OCR 解析结果统一为具名字段 `RecognitionResult`；`PreviewTable` 按模板 schema 校验字段、补齐空值并投影为内部预览结构，不再依赖调用方传入的完整行位置索引
 - 单据快照到导出或接口发送的校验、订单类型与日期等语义归一化、字段映射和 artifact 构建统一由 `delivery_preparation.prepare_delivery()` 完成；`document_template.py` 定义单据模板 schema 与语义归一化规则，`excel_export.py` / `wms_client.py` 仅作为目标 adapter，Tk 只负责界面编排与提示
 - 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`document_template.py`、`delivery_preparation.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、单据模板规则、交付准备、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 请求发送、医疗器械目录查询缓存和客商查询
 - 支持 PyInstaller onedir 打包为 Windows 无控制台程序，Excel 模板随包分发；导出目录每次由人工选择，并默认打开上次选择的目录
@@ -190,7 +191,7 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - 三种单据的 `订单类型` 选项、默认值、导出代码、预览/导出行结构和日期、状态、客商编码等语义归一化集中在 `document_template.py`；后续扩展只需调整对应模板定义
 - 单据快照的 `EXPORT` / `WMS_SEND` 校验与 artifact 构建集中在 `delivery_preparation.py`；`excel_export.py` 与 `wms_client.py` 不再重复执行模板字段映射
 - Flux WMS `putPurchaseOrder` 接口地址、`apptoken`、`sign`，以及固定货主 `GEHC`、固定仓库 `WH004078`；报文字段映射在 `delivery_preparation.py`，头部包含 `poReferenceA=运单号`、`udf01=CARRIER`、`udf02=HAWB`
-- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射在 `delivery_preparation.py`，`consigneeId` 统一读取单据头 `客商编码` 并以 `CONSIGNEEID` 回退
+- Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射在 `delivery_preparation.py`，`consigneeId` 统一读取 `PreviewTable` 派生的有效客商编码，不在报文层重复回退
 - Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
 - Flux WMS `QUERYMD` 医疗器械目录查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，目录记录缓存读取、覆盖和物料编码匹配集中在 `medical_device_client.py`
 - Flux WMS `QUERYCO` 客商查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，请求、回告解析、列表转换和本地过滤集中在 `customer_client.py`
@@ -216,6 +217,10 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-18: [变更] 三种单据 OCR 解析结果改为具名字段 `RecognitionResult`，`PreviewTable` 统一校验并投影，移除对完整行位置索引的依赖
+- 2026-09-18: [变更] `PreviewTable` 构造时直接按 `template` 取得完整字段与预览布局，移除调用方重复传递的 `full_headers` / `header_fields` / `detail_fields`，并清理预览队列和模拟数据中的冗余 `headers`
+- 2026-09-18: [变更] 将 `CONSIGNEEID` 回退收敛到 `PreviewTable` 派生的有效客商编码；移除 `document_template.py` 与 `delivery_preparation.py` 中的重复回退分支，下游只消费已派生值
+- 2026-09-18: [变更] 删除 `PreviewTable` 中无调用方的当前页签选择状态与 `select_document()` 接口；当前文件页签明确由 Tk 展示层管理，并同步收窄 `CONTEXT.md` 与 ADR-0001
 - 2026-09-17: [变更] 新增 `delivery_preparation.py` 与 `document_template.py`，把单据快照到 Excel/WMS 的目标校验、语义归一化、字段映射和 artifact 构建集中到 `prepare_delivery()`；`excel_export.py` / `wms_client.py` 改为只负责写入或发送，Tk 只保留界面编排与提示，并新增交付准备与 Excel 链路回归测试
 - 2026-09-17: [变更] ORACLE/OSCAR 客商编码回填状态迁入 `PreviewTable`：模型分别持有隐藏回填值和派生的有效客商编码，医疗器械命中时决定可否回填，外部单据头输入和直接 `update_header` 写入不再生效；目录刷新、页签重建及续查替换保留回填值，导出、校验和 WMS 发送统一读取有效值
 - 2026-09-17: [变更] 全部预览单据状态迁移到无 Tk 的 `PreviewTable` 权威模型，Tk 仅渲染只读快照并转发编辑、选择与剪贴板命令；导出和 WMS 发送统一读取模型快照与校验问题，续查成功按原单据 ID 替换内容

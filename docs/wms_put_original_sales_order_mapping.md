@@ -12,7 +12,6 @@
 ```text
 FIXED_CUSTOMER_ID  = "GEHC"
 FIXED_WAREHOUSE_ID = "WH004078"
-CONSIGNEE_ID_FALLBACK = "CONSIGNEEID"  # 客商编码为空时的统一回退值
 CONSIGNEE_NAME     = "虚拟收货人"  # 仅 ORACLE 固定发送
 PACK_UOM           = "EA"
 PRICE              = "0"
@@ -33,7 +32,7 @@ PRICE              = "0"
 | `soReferenceC` | 无来源省略 | 无来源省略 | 不发送 |
 | `soReferenceD` | 无来源省略 | 无来源省略 | 不发送 |
 | `orderTime` | `Pick Slip Print Date`（D） | 无来源（组装报文时取当前时间） | ORACLE 转 `YYYY-MM-DD HH:MM:SS`；OSCAR 取组装报文时的当前时间 |
-| `consigneeId` | 单据头 `客商编码`（V） | 单据头 `客商编码`（Z） | 去除首尾空格；空值回退 `CONSIGNEE_ID_FALLBACK` |
+| `consigneeId` | 有效客商编码（V） | 有效客商编码（Z） | 去除首尾空格；直接使用 `PreviewTable` 已派生的值，不在报文层回退 |
 | `consigneeName` | 固定 `虚拟收货人` | `供应商`（AA） | ORACLE 用 `CONSIGNEE_NAME`；OSCAR 原值，空值省略 |
 | `consigneeContact` | 无来源省略 | `收货人`（AB） | 原值，空值省略 |
 | `consigneeTel1` | 无来源省略 | `收货人电话`（AC） | 原值，空值省略 |
@@ -86,7 +85,7 @@ PRICE              = "0"
 ## 实现要点
 
 - `订单类型` 中文标签应先转换为当前模板使用的 `GNCK_*` / `GWCK_*` 代码，再写入 `orderType`。
-- `consigneeId` 统一读取单据头 `客商编码`；医疗器械未命中、未要求填写或输入为空时，使用 `CONSIGNEEID` 回退值。
+- `consigneeId` 直接使用已派生的 `Effective Consignee ID`；`CONSIGNEEID` 回退只在 `PreviewTable` 派生有效客商编码时产生，交付准备不重复处理。
 - ORACLE 日期转换可复用导出逻辑中的三字母/完整月份、2 位/4 位年份转换规则。
 - `lotAtt08` 的 ORACLE 和 OSCAR 转换规则不同，不能使用同一个固定值。
 - OSCAR `序列号` 为空或 `N/A`（不区分大小写）时按空处理，Excel `AT` 不写入、接口 `lotAtt09` 省略；预览仍保留 OCR 原文。

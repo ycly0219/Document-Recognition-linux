@@ -1,9 +1,14 @@
 """无 Tk 的预览表格权威状态模型。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from document_template import get_default_order_type_label
+from document_template import (
+    get_core_headers,
+    get_default_order_type_label,
+    get_preview_layout,
+)
 
 
 SUCCESS = "success"
@@ -50,7 +55,7 @@ class DocumentInput:
 
     metadata: DocumentMetadata
     header_values: dict = field(default_factory=dict)
-    rows: tuple = ()
+    detail_lines: tuple = ()
     split_groups: tuple = ()
 
 
@@ -98,7 +103,6 @@ class PreviewTableSnapshot:
     full_headers: tuple
     header_fields: tuple
     detail_fields: tuple
-    active_document_id: str
     documents: tuple
 
 
@@ -178,26 +182,37 @@ def _validate_headers(values, expected, label):
     return tuple(_text(value) for value in values)
 
 
+def _validate_named_values(values, expected, label):
+    if not isinstance(values, Mapping):
+        raise ValueError(f"{label}必须是字典")
+    unknown = [field for field in values if field not in expected]
+    if unknown:
+        raise ValueError(f"{label}包含未知字段: {unknown}")
+    return values
+
+
 class PreviewTable:
     """一次预览会话的权威状态。"""
 
     def __init__(
         self,
         template,
-        full_headers,
-        header_fields,
-        detail_fields,
         documents,
         catalog_skus=frozenset(),
     ):
         self.template = _require_identifier(template, "模板")
-        self.full_headers = tuple(full_headers or ())
-        self.header_fields = tuple(header_fields or ())
-        self.detail_fields = tuple(detail_fields or ())
+        full_headers = get_core_headers(self.template)
+        header_fields, detail_fields = get_preview_layout(self.template)
+        self.full_headers = tuple(full_headers)
+        self.header_fields = tuple(header_fields)
+        self.detail_fields = tuple(detail_fields)
+        self._header_value_fields = tuple(
+            field for field in self.full_headers
+            if field not in set(self.detail_fields)
+        )
         self._validate_table_fields()
         self._catalog_skus = self._normalize_catalog_skus(catalog_skus)
         self._documents = {}
-        self._active_document_id = ""
 
         document_inputs = tuple(documents or ())
         if document_inputs and not isinstance(document_inputs[0], DocumentInput):
@@ -209,8 +224,6 @@ class PreviewTable:
             if document_id in self._documents:
                 raise ValueError(f"重复的预览单据 ID: {document_id}")
             self._documents[document_id] = self._create_document(document)
-            if not self._active_document_id:
-                self._active_document_id = document_id
 
     def _validate_table_fields(self):
         for label, fields in (
@@ -237,12 +250,33 @@ class PreviewTable:
         _require_identifier(metadata.filename, "文件名")
         if metadata.status not in _VALID_STATUSES:
             raise ValueError(f"未知处理状态: {metadata.status}")
-        unknown_headers = set(document.header_values) - set(self.full_headers)
-        if unknown_headers:
-            raise ValueError(f"未知单据头字段: {sorted(unknown_headers)}")
-        for row in document.rows:
-            if len(tuple(row)) != len(self.full_headers):
-                raise ValueError("输入明细字段数量与 full_headers 不一致")
+        _validate_named_values(
+            document.header_values,
+            self._header_value_fields,
+            "单据头字段",
+        )
+        for line in document.detail_lines:
+            _validate_named_values(
+                line,
+                self.detail_fields,
+                "明细行字段",
+            )
+        for group in document.split_groups:
+            if not isinstance(group, Mapping):
+                raise ValueError("拆分分组必须是字典")
+            unknown_group_fields = [
+                field for field in group
+                if field not in {"child_indexes", "summary_values"}
+            ]
+            if unknown_group_fields:
+                raise ValueError(
+                    f"拆分分组包含未知字段: {unknown_group_fields}"
+                )
+            _validate_named_values(
+                group.get("summary_values") or {},
+                self.detail_fields,
+                "拆分汇总字段",
+            )
         return document_id
 
     def _create_document(self, document):
@@ -255,30 +289,21 @@ class PreviewTable:
             log_row=tuple(document.metadata.log_row or ()),
             manual=bool(document.metadata.manual),
         )
-        header_values = self._merge_header_values(
-            document.header_values, document.rows
-        )
+        header_values = self._merge_header_values(document.header_values)
         lines = []
-        for index, row in enumerate(document.rows, start=1):
-            full_values = _validate_headers(
-                row, self.full_headers, "明细行"
-            )
-            row_map = dict(zip(self.full_headers, full_values))
+        for index, detail_line in enumerate(document.detail_lines, start=1):
             lines.append(_Line(
                 f"line-{index}",
-                tuple(row_map.get(field, "") for field in self.detail_fields),
+                tuple(
+                    _text(detail_line.get(field, ""))
+                    for field in self.detail_fields
+                ),
             ))
         split_groups = self._build_split_groups(document.split_groups, lines)
         return _Document(metadata, header_values, lines, split_groups)
 
-    def _merge_header_values(self, provided, rows):
+    def _merge_header_values(self, provided):
         values = {field: "" for field in self.full_headers}
-        for row in rows or ():
-            row_map = dict(zip(self.full_headers, row))
-            for field in self.full_headers:
-                value = _text(row_map.get(field, ""))
-                if not values[field] and value.strip():
-                    values[field] = value
         for field, value in (provided or {}).items():
             values[field] = _text(value)
         if (
@@ -297,7 +322,7 @@ class PreviewTable:
         groups = []
         grouped_line_ids = set()
         for index, raw_group in enumerate(raw_groups or (), start=1):
-            if not isinstance(raw_group, dict):
+            if not isinstance(raw_group, Mapping):
                 raise ValueError("拆分分组必须是字典")
             child_indexes = tuple(raw_group.get("child_indexes") or ())
             for child_index in child_indexes:
@@ -314,16 +339,14 @@ class PreviewTable:
             )
             if grouped_line_ids.intersection(child_line_ids):
                 raise ValueError("同一明细行不能属于多个拆分分组")
-            summary_row = raw_group.get("summary_row") or ()
-            if summary_row:
-                summary_values = _validate_headers(
-                    summary_row, self.full_headers, "拆分汇总行"
-                )
-            else:
-                summary_values = tuple("" for _ in self.full_headers)
-            summary_map = dict(zip(self.full_headers, summary_values))
+            summary_values = _validate_named_values(
+                raw_group.get("summary_values") or {},
+                self.detail_fields,
+                "拆分汇总字段",
+            )
             display_summary = tuple(
-                summary_map.get(field, "") for field in self.detail_fields
+                _text(summary_values.get(field, ""))
+                for field in self.detail_fields
             )
             if self.template == "GE-发票单":
                 display_summary = tuple(
@@ -517,18 +540,11 @@ class PreviewTable:
             full_headers=tuple(self.full_headers),
             header_fields=tuple(self.header_fields),
             detail_fields=tuple(self.detail_fields),
-            active_document_id=self._active_document_id,
             documents=tuple(
                 self._snapshot_document(document)
                 for document in self._documents.values()
             ),
         )
-
-    def select_document(self, document_id):
-        """切换当前预览单据。"""
-        document = self._require_document(document_id)
-        self._active_document_id = document.metadata.document_id
-        return self._command_result(document)
 
     def update_header(self, document_id, field, value, record_undo=True):
         """修改单据头字段。"""
@@ -692,8 +708,6 @@ class PreviewTable:
             current.consignee_backfill_value
         )
         self._documents[target_id] = replaced
-        if not self._active_document_id:
-            self._active_document_id = target_id
         return self._command_result(replaced)
 
     def update_status(self, document_id, status, message=""):

@@ -72,7 +72,6 @@ _OSCAR_DETAIL_HEADERS = (
 )
 
 _INVALID_FILENAME_CHARS = ("\\", "/", ":", "*", "?", '"', "<", ">", "|")
-_CONSIGNEE_FALLBACK = "CONSIGNEEID"
 _MANUAL_FILENAME = "空白单据"
 
 
@@ -252,9 +251,7 @@ def _build_oracle_put_original_sales_order_payload(
     header = {
         "warehouseId": WMS_WAREHOUSE_ID,
         "customerId": WMS_CUSTOMER_ID,
-        "consigneeId": (
-            _text(header_values.get("客商编码")) or _CONSIGNEE_FALLBACK
-        ),
+        "consigneeId": _text(header_values.get("客商编码")),
         "consigneeName": "虚拟收货人",
     }
     _optional_item(header, "orderType", header_values.get("订单类型"))
@@ -316,9 +313,7 @@ def _build_oscar_put_original_sales_order_payload(
     header = {
         "warehouseId": WMS_WAREHOUSE_ID,
         "customerId": WMS_CUSTOMER_ID,
-        "consigneeId": (
-            _text(header_values.get("客商编码")) or _CONSIGNEE_FALLBACK
-        ),
+        "consigneeId": _text(header_values.get("客商编码")),
     }
     _optional_item(header, "orderType", header_values.get("订单类型"))
     _optional_item(header, "docNo", header_values.get("服务申请号"))

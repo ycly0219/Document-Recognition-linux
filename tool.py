@@ -25,7 +25,6 @@ from delivery_preparation import (
     prepare_delivery,
 )
 from document_template import (
-    get_core_headers,
     get_default_order_type_label,
     get_order_type_labels,
     get_preview_layout,
@@ -948,8 +947,7 @@ def process_batch(files, select_text, current_model_id):
         file_id = ""
         file_url = ""
         req_uuid = ""
-        parsed_rows = []
-        split_groups = []
+        recognition_result = None
         ocr_result_dict = None
 
         try:
@@ -966,10 +964,10 @@ def process_batch(files, select_text, current_model_id):
 
             if ocr_result_dict and ocr_result_dict.get("status") is True:
                 commit_result = ocr_result_dict.get("data", {}).get("commitResult", {})
-                parsed_rows, split_groups = parse_commit_result(
+                recognition_result = parse_commit_result(
                     select_text, commit_result, filename
                 )
-                core_data.extend(parsed_rows)
+                core_data.extend(recognition_result.detail_lines)
                 if select_text == "GE-发票单":
                     print_log(f"{filename} 处理完成后总明细行数:{len(core_data)}")
 
@@ -1005,8 +1003,7 @@ def process_batch(files, select_text, current_model_id):
             "filename": filename,
             "status": status,
             "message": res_msg,
-            "rows": parsed_rows,
-            "split_groups": split_groups,
+            "recognition_result": recognition_result,
             "req_uuid": req_uuid,
             "log_row": [filename, file_id, file_url, req_uuid, "", status, res_msg, ""],
         })
@@ -1019,8 +1016,7 @@ def process_batch(files, select_text, current_model_id):
         print_log("批次已由用户中止，不进入预览")
         return False
 
-    ui_message_queue.put(("preview", select_text,
-                          get_core_headers(select_text), file_results,
+    ui_message_queue.put(("preview", select_text, file_results,
                           success_count, fail_count))
     return True
 
@@ -1029,7 +1025,7 @@ def process_mock_batch(select_text):
     """生成两个演示文件页签并直接进入预览流程。"""
     print_log(f"===== 模拟数据模式，模板：{select_text} =====")
     ui_message_queue.put(("progress", 1, 2))
-    headers, file_results = generate_mock_data(select_text)
+    file_results = generate_mock_data(select_text)
     for file_result in file_results:
         file_result["log_row"] = [
             file_result["filename"], "", "", "", "",
@@ -1037,11 +1033,15 @@ def process_mock_batch(select_text):
         ]
     success_count = sum(item["status"] == "成功" for item in file_results)
     fail_count = len(file_results) - success_count
-    total_rows = sum(len(item["rows"]) for item in file_results)
+    total_rows = sum(
+        len(item["recognition_result"].detail_lines)
+        for item in file_results
+        if item["recognition_result"] is not None
+    )
     print_log(f"生成模拟页签数: {len(file_results)}，明细总行数: {total_rows}")
     ui_message_queue.put(("progress", 2, 2))
-    ui_message_queue.put(("preview", select_text, headers,
-                          file_results, success_count, fail_count))
+    ui_message_queue.put(("preview", select_text, file_results,
+                          success_count, fail_count))
 
 
 # ---------------- 预览与导出交互 ----------------
@@ -1065,6 +1065,7 @@ def _document_inputs(raw_file_results):
     """把后台文件结果转换为模型输入，所有业务字段立即脱敏为只读值。"""
     inputs = []
     for index, file_result in enumerate(raw_file_results, start=1):
+        recognition_result = file_result.get("recognition_result")
         inputs.append(preview_model.DocumentInput(
             metadata=preview_model.DocumentMetadata(
                 document_id=f"document-{index}",
@@ -1075,24 +1076,27 @@ def _document_inputs(raw_file_results):
                 log_row=tuple(file_result.get("log_row") or ()),
                 manual=bool(file_result.get("manual")),
             ),
-            header_values=dict(file_result.get("header_values") or {}),
-            rows=tuple(
-                tuple(row) for row in (file_result.get("rows") or ())
+            header_values=(
+                recognition_result.header_values
+                if recognition_result is not None else {}
             ),
-            split_groups=tuple(file_result.get("split_groups") or ()),
+            detail_lines=(
+                recognition_result.detail_lines
+                if recognition_result is not None else ()
+            ),
+            split_groups=(
+                recognition_result.split_groups
+                if recognition_result is not None else ()
+            ),
         ))
     return tuple(inputs)
 
 
-def _replace_preview_table(select_text, headers, raw_file_results):
+def _replace_preview_table(select_text, raw_file_results):
     """创建当前会话唯一的权威预览表格。"""
     global preview_table
-    header_fields, detail_fields = get_preview_layout(select_text)
     preview_table = preview_model.PreviewTable(
         select_text,
-        headers,
-        header_fields,
-        detail_fields,
         _document_inputs(raw_file_results),
         catalog_skus=medical_device_skus,
     )
@@ -2328,18 +2332,17 @@ def _background_task_active():
 def create_blank_preview(select_text):
     """创建当前模板的空白可编辑页签，用于不选择文件的手工填写。"""
     global preview_select_text, preview_files, active_tree
-    headers = get_core_headers(select_text)
     file_result = {
         "filename": MANUAL_FILENAME,
         "status": MANUAL_STATUS,
         "message": "未选择文件，等待人工填写",
-        "rows": [],
+        "recognition_result": None,
         "req_uuid": "",
         "log_row": [MANUAL_FILENAME, "", "", "", "", MANUAL_STATUS, MANUAL_STATUS, ""],
         "manual": True,
     }
     preview_select_text = select_text
-    _replace_preview_table(select_text, headers, [file_result])
+    _replace_preview_table(select_text, [file_result])
     preview_files = [_new_preview_file_info(
         preview_table.snapshot("document-1")
     )]
@@ -2377,7 +2380,7 @@ def _active_preview_file():
     return None
 
 
-def show_preview(select_text, headers, file_results,
+def show_preview(select_text, file_results,
                  success_count, fail_count):
     """按文件创建预览页签，并调整界面按钮状态。"""
     global preview_select_text, preview_files, active_tree
@@ -2386,7 +2389,7 @@ def show_preview(select_text, headers, file_results,
     for info in preview_files:
         if info.get("tab") is not None:
             info["tab"].destroy()
-    _replace_preview_table(select_text, headers, file_results)
+    _replace_preview_table(select_text, file_results)
     table_snapshot = preview_table.snapshot_table()
     preview_files = [
         _new_preview_file_info(snapshot)
@@ -2607,7 +2610,7 @@ def continue_task_worker(
         if not (ocr_result_dict and ocr_result_dict.get("status") is True):
             raise Exception("OCR返回识别状态异常")
         commit_result = ocr_result_dict.get("data", {}).get("commitResult", {})
-        parsed_rows, split_groups = parse_commit_result(
+        recognition_result = parse_commit_result(
             select_text, commit_result, filename
         )
         updated_log_row = list(log_row)
@@ -2626,8 +2629,7 @@ def continue_task_worker(
             "continue_success",
             document_id,
             select_text,
-            parsed_rows,
-            split_groups,
+            recognition_result,
             tuple(updated_log_row),
         ))
     except OCRResultTimeout:
@@ -2650,7 +2652,7 @@ def continue_task_worker(
 
 
 def _apply_continue_success(
-    document_id, select_text, parsed_rows, split_groups, updated_log_row
+    document_id, select_text, recognition_result, updated_log_row
 ):
     """按续查成功结果重建对应页签，并刷新可编辑/导出状态。"""
     old_snapshot = preview_table.snapshot(document_id)
@@ -2666,8 +2668,9 @@ def _apply_continue_success(
                 log_row=tuple(updated_log_row),
                 manual=False,
             ),
-            rows=tuple(tuple(row) for row in parsed_rows),
-            split_groups=tuple(split_groups),
+            header_values=recognition_result.header_values,
+            detail_lines=recognition_result.detail_lines,
+            split_groups=recognition_result.split_groups,
         ),
     )
     info = _preview_file_info(document_id)
@@ -3410,14 +3413,13 @@ def poll_ui_queue():
             on_preview_tab_changed()
             finish_abort_state()
         elif kind == "continue_success":
-            (document_id, select_text, parsed_rows, split_groups,
+            (document_id, select_text, recognition_result,
              updated_log_row) = payload
             continue_query_active = False
             _apply_continue_success(
                 document_id,
                 select_text,
-                parsed_rows,
-                split_groups,
+                recognition_result,
                 updated_log_row,
             )
             set_progress_state(100, "处理进度：续查完成")

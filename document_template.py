@@ -375,7 +375,7 @@ def _normalize_header_value(template, field, value):
     if field == "订单类型":
         return get_order_type_value(template, value)
     if field == "客商编码":
-        return str(value or "").strip() or "CONSIGNEEID"
+        return str(value or "").strip()
     if template == "GE-ORACLE拣货单":
         if field == "Pick Slip Print Date":
             return _normalize_oracle_datetime(value, include_time=True)

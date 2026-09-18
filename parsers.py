@@ -1,9 +1,20 @@
 """三种单据模板的列头定义、识别结果解析与发票明细拆分。"""
 
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
-from document_template import get_default_order_type_label
 from logging_utils import print_log
+
+
+@dataclass(frozen=True)
+class RecognitionResult:
+    """一次 OCR 识别的具名字段解析结果。"""
+
+    header_values: Mapping
+    detail_lines: tuple
+    split_groups: tuple = ()
 
 
 _ITEM_DETAIL_PATTERN = re.compile(
@@ -12,13 +23,31 @@ _ITEM_DETAIL_PATTERN = re.compile(
 )
 
 
+def _named_values(values):
+    """去除空值并冻结一层字段字典。"""
+    if not isinstance(values, Mapping):
+        raise TypeError("具名字段必须是映射")
+    return MappingProxyType({
+        field: value for field, value in values.items()
+        if value not in ("", None)
+    })
+
+
+def _split_group(child_indexes, summary_values):
+    """构造具名字段拆分分组。"""
+    return MappingProxyType({
+        "child_indexes": tuple(child_indexes),
+        "summary_values": _named_values(summary_values),
+    })
+
+
 def _normalize_address(value):
     """把 OCR 地址中的连续空白折为一个空格，并去除首尾空白。"""
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _parse_oracle_picklist(commit_result, filename):
-    """解析 GE-ORACLE 拣货单，返回明细行列表。"""
+    """解析 GE-ORACLE 拣货单，返回具名字段识别结果。"""
     order_number = commit_result.get("Order Number", {}).get("value", "").strip()
     order_type = commit_result.get("OrderType", {}).get("value", "").strip()
     ordered_date = commit_result.get("Ordered Date", {}).get("value", "").strip()
@@ -51,7 +80,7 @@ def _parse_oracle_picklist(commit_result, filename):
         raise Exception("未识别到Order Number订单号")
 
     print_log(f"{filename} OrderNumber:{order_number} Delivery:{delivery} 明细行数:{len(material_list)}")
-    rows = []
+    detail_lines = []
     for item in material_list:
         task_id = item.get("Task Id", {}).get("value", "").strip()
         item_no = item.get("Item Number", {}).get("value", "").strip()
@@ -65,45 +94,46 @@ def _parse_oracle_picklist(commit_result, filename):
         for label, value in _ITEM_DETAIL_PATTERN.findall(item_detail):
             trace_values[label] = value.strip()
 
-        # 按 get_core_headers 的预览列顺序拼接字段
-        rows.append([
-            "",
-            "",
-            order_number,
-            task_id,
-            item_no,
-            qty,
-            trace_values["LPN"],
-            trace_values["Serial"],
-            trace_values["Lot"],
-            trace_values["COO"],
-            pick_loc,
-            order_type,
-            ordered_date,
-            shipment_priority,
-            ship_method,
-            service_level,
-            fe_sso,
-            fe_name,
-            customer_name,
-            customer_number,
-            ship_to_no,
-            ship_addr,
-            email,
-            shipping_instruction,
-            special_instruction,
-            org,
-            pick_slip_print_date,
-            system_id,
-            pick_from_subinv,
-            customer_po,
-            delivery,
-        ])
-    return rows, []
+        detail_lines.append(_named_values({
+            "Task Id": task_id,
+            "Item Number": item_no,
+            "Qty": qty,
+            "LPN": trace_values["LPN"],
+            "Serial": trace_values["Serial"],
+            "Lot": trace_values["Lot"],
+            "COO": trace_values["COO"],
+            "Pick From Locator": pick_loc,
+            "Org": org,
+        }))
+    return RecognitionResult(
+        header_values=_named_values({
+            "Pick Slip Print Date": pick_slip_print_date,
+            "Order Number": order_number,
+            "OrderType": order_type,
+            "Ordered Date": ordered_date,
+            "Shipment Priority": shipment_priority,
+            "Ship Method": ship_method,
+            "Service Level": service_level,
+            "FE SSO": fe_sso,
+            "FE Name": fe_name,
+            "SHIP TO NO": ship_to_no,
+            "Ship To Address": ship_addr,
+            "Shipping Instruction": shipping_instruction,
+            "Special Instruction": special_instruction,
+            "Customer Name": customer_name,
+            "Customer Number": customer_number,
+            "System Id": system_id,
+            "Pick From Subinv": pick_from_subinv,
+            "Customer PO": customer_po,
+            "Delivery": delivery,
+            "Email": email,
+        }),
+        detail_lines=tuple(detail_lines),
+    )
 
 
 def _parse_oscar_picklist(commit_result, filename):
-    """解析 GE-OSCAR 拣货单，返回明细行列表与空拆分分组。"""
+    """解析 GE-OSCAR 拣货单，返回具名字段识别结果。"""
     service_apply_no = commit_result.get("服务申请号", {}).get("value", "").strip()
     sr_no = commit_result.get("SR编号", {}).get("value", "").strip()
     supplier = commit_result.get("供应商", {}).get("value", "").strip()
@@ -126,7 +156,7 @@ def _parse_oscar_picklist(commit_result, filename):
         raise Exception("未识别到服务申请号")
 
     print_log(f"{filename} 服务申请号:{service_apply_no} SR编号:{sr_no} 收货人:{consignee_name} 姓名:{real_name} 客户设备id:{cust_device_id} 明细行数:{len(material_list)}")
-    rows = []
+    detail_lines = []
     for item in material_list:
         mat_no = item.get("物料编号", {}).get("value", "").strip()
         qty = item.get("数量", {}).get("value", "").strip()
@@ -136,25 +166,38 @@ def _parse_oscar_picklist(commit_result, filename):
         status_val = item.get("状态", {}).get("value", "").strip()
         warehouse = item.get("仓库", {}).get("value", "").strip()
 
-        rows.append([
-            "",
-            "",
-            service_apply_no, mat_no, qty, serial_no, locator, status_val,
-            warehouse, supplier, sso, consignee_name, real_name, ship_addr,
-            lead_time, consignee_tel, apply_note, cust_device_id, sr_no,
-            track_no,
-        ])
-    return rows, []
+        detail_lines.append(_named_values({
+            "物料编号": mat_no,
+            "数量": qty,
+            "序列号": serial_no,
+            "货位": locator,
+            "仓库": warehouse,
+            "状态": status_val,
+            "跟踪号": track_no,
+        }))
+    return RecognitionResult(
+        header_values=_named_values({
+            "服务申请号": service_apply_no,
+            "SR编号": sr_no,
+            "时效": lead_time,
+            "供应商": supplier,
+            "收货人": consignee_name,
+            "收货地址": ship_addr,
+            "收货人电话": consignee_tel,
+            "申请说明": apply_note,
+            "SSO": sso,
+            "姓名": real_name,
+            "客户设备id": cust_device_id,
+        }),
+        detail_lines=tuple(detail_lines),
+    )
 
 
 def _parse_invoice(commit_result, filename):
     """解析 GE-发票单，并按 LPN/Serial 与数量关系拆分明细。
 
-    返回 (明细行列表, 拆分汇总元数据)；明细行仍保持可导出的平铺结构；
-    只拆出 1 条子行时不返回汇总元数据。
+    返回具名字段识别结果；只拆出 1 条子行时不返回汇总元数据。
     """
-    order_type = get_default_order_type_label("GE-发票单")
-    tracking_no = ""
     invoice_no = commit_result.get("INVOICE NO", {}).get("value", "").strip()
     delivery = commit_result.get("DELIVERY", {}).get("value", "").strip()
     doc_date = commit_result.get("DATE", {}).get("value", "").strip()
@@ -169,9 +212,9 @@ def _parse_invoice(commit_result, filename):
         raise Exception("未识别到INVOICE NO发票号")
 
     print_log(f"{filename} INVOICE NO:{invoice_no} DELIVERY:{delivery} DATE:{doc_date} CARRIER:{carrier} HAWB:{hawb} 明细总行数:{len(material_list)}")
-    rows = []
+    detail_lines = []
     split_groups = []
-    for source_index, item in enumerate(material_list):
+    for item in material_list:
         raw_qty_str = item.get("QTY", {}).get("value", "").strip()
         item_num = item.get("ITEM NUMBER", {}).get("value", "").strip()
         country_of_origin = item.get("COUNTRY OF ORIGIN", {}).get("value", "").strip()
@@ -181,12 +224,24 @@ def _parse_invoice(commit_result, filename):
         sales_order = item.get("SALES ORDER NO", {}).get("value", "").strip()
         customer_po = item.get("CUSTOMER PO", {}).get("value", "").strip()
         expire = item.get("Expiration Date", {}).get("value", "").strip()
-        split_summary_row = [
-            order_type, tracking_no, invoice_no, item_num, raw_qty_str,
-            "原始行汇总", "", lot, expire,
-            country_of_origin, sales_order, customer_po,
-            doc_date, delivery, carrier, hawb
-        ]
+        split_summary_values = {
+            "ITEM NUMBER": item_num,
+            "QTY": raw_qty_str,
+            "LPN Number": "原始行汇总",
+        }
+
+        def append_detail(qty, lpn, serial):
+            detail_lines.append(_named_values({
+                "ITEM NUMBER": item_num,
+                "QTY": qty,
+                "LPN Number": lpn,
+                "Serial Number": serial,
+                "LOT Number": lot,
+                "Expiration Date": expire,
+                "COUNTRY OF ORIGIN": country_of_origin,
+                "SALES ORDER NO": sales_order,
+                "CUSTOMER PO": customer_po,
+            }))
 
         # 清洗LPN列表
         lpn_list = [lpn.strip() for lpn in raw_lpn_str.split(",") if lpn.strip()]
@@ -207,35 +262,20 @@ def _parse_invoice(commit_result, filename):
                 print_log(f"Serial为空，匹配LPN规则1：LPN数量={lpn_count}=QTY{qty_val}，逐个拆分")
                 child_indexes = []
                 for single_lpn in lpn_list:
-                    child_indexes.append(len(rows))
-                    rows.append([
-                        order_type, tracking_no, invoice_no, item_num, "1", single_lpn, "", lot, expire,
-                        country_of_origin, sales_order, customer_po,
-                        doc_date, delivery, carrier, hawb
-                    ])
+                    child_indexes.append(len(detail_lines))
+                    append_detail("1", single_lpn, "")
                 # 单条拆分直接作为普通明细行，不生成汇总分组
                 if len(child_indexes) > 1:
-                    split_groups.append({
-                        "source_index": source_index,
-                        "source_qty": raw_qty_str,
-                        "summary_row": split_summary_row,
-                        "child_indexes": child_indexes,
-                    })
+                    split_groups.append(
+                        _split_group(child_indexes, split_summary_values)
+                    )
             elif lpn_count == 1 and qty_val > 0:
                 single_lpn = lpn_list[0]
                 print_log(f"Serial为空，匹配LPN规则2：单LPN，QTY={qty_val}，保留一行")
-                rows.append([
-                    order_type, tracking_no, invoice_no, item_num, raw_qty_str, single_lpn, "", lot, expire,
-                    country_of_origin, sales_order, customer_po,
-                    doc_date, delivery, carrier, hawb
-                ])
+                append_detail(raw_qty_str, single_lpn, "")
             else:
                 # LPN不满足拆分，原样一行
-                rows.append([
-                    order_type, tracking_no, invoice_no, item_num, raw_qty_str, raw_lpn_str, "", lot, expire,
-                    country_of_origin, sales_order, customer_po,
-                    doc_date, delivery, carrier, hawb
-                ])
+                append_detail(raw_qty_str, raw_lpn_str, "")
         # 情况2：Serial有值，原有多字段匹配逻辑
         else:
             # 场景1：LPN数量=QTY，Serial数量也等于QTY，一一对应拆分
@@ -245,78 +285,59 @@ def _parse_invoice(commit_result, filename):
                 for idx in range(qty_val):
                     single_lpn = lpn_list[idx]
                     single_serial = serial_list[idx]
-                    child_indexes.append(len(rows))
-                    rows.append([
-                        order_type, tracking_no, invoice_no, item_num, "1", single_lpn, single_serial, lot, expire,
-                        country_of_origin, sales_order, customer_po,
-                        doc_date, delivery, carrier, hawb
-                    ])
+                    child_indexes.append(len(detail_lines))
+                    append_detail("1", single_lpn, single_serial)
                 # 单条拆分直接作为普通明细行，不生成汇总分组
                 if len(child_indexes) > 1:
-                    split_groups.append({
-                        "source_index": source_index,
-                        "source_qty": raw_qty_str,
-                        "summary_row": split_summary_row,
-                        "child_indexes": child_indexes,
-                    })
+                    split_groups.append(
+                        _split_group(child_indexes, split_summary_values)
+                    )
             # 场景2：仅1个LPN、仅1个Serial，按QTY循环复制N行
             elif lpn_count == 1 and serial_count == 1 and qty_val > 0:
                 single_lpn = lpn_list[0]
                 single_serial = serial_list[0]
                 print_log(f"匹配规则2：单LPN+单Serial，QTY={qty_val}，保留一行")
-                rows.append([
-                    order_type, tracking_no, invoice_no, item_num, raw_qty_str, single_lpn, single_serial, lot, expire,
-                    country_of_origin, sales_order, customer_po,
-                    doc_date, delivery, carrier, hawb
-                ])
+                append_detail(raw_qty_str, single_lpn, single_serial)
             # 场景3：只有Serial多个、LPN单个，且serial_count == qty_val
             elif lpn_count == 1 and serial_count == qty_val and qty_val > 0:
                 single_lpn = lpn_list[0]
                 print_log(f"匹配规则3：单LPN，Serial数量={serial_count}=QTY{qty_val}，拆分Serial多行")
                 child_indexes = []
                 for single_serial in serial_list:
-                    child_indexes.append(len(rows))
-                    rows.append([
-                        order_type, tracking_no, invoice_no, item_num, "1", single_lpn, single_serial, lot, expire,
-                        country_of_origin, sales_order, customer_po,
-                        doc_date, delivery, carrier, hawb
-                    ])
-                split_groups.append({
-                    "source_index": source_index,
-                    "source_qty": raw_qty_str,
-                    "summary_row": split_summary_row,
-                    "child_indexes": child_indexes,
-                })
+                    child_indexes.append(len(detail_lines))
+                    append_detail("1", single_lpn, single_serial)
+                split_groups.append(
+                    _split_group(child_indexes, split_summary_values)
+                )
             # 场景4：只有LPN多个、Serial单个，且lpn_count == qty_val
             elif serial_count == 1 and lpn_count == qty_val and qty_val > 0:
                 single_serial = serial_list[0]
                 print_log(f"匹配规则4：单Serial，LPN数量={lpn_count}=QTY{qty_val}，拆分LPN多行")
                 child_indexes = []
                 for single_lpn in lpn_list:
-                    child_indexes.append(len(rows))
-                    rows.append([
-                        order_type, tracking_no, invoice_no, item_num, "1", single_lpn, single_serial, lot, expire,
-                        country_of_origin, sales_order, customer_po,
-                        doc_date, delivery, carrier, hawb
-                    ])
-                split_groups.append({
-                    "source_index": source_index,
-                    "source_qty": raw_qty_str,
-                    "summary_row": split_summary_row,
-                    "child_indexes": child_indexes,
-                })
+                    child_indexes.append(len(detail_lines))
+                    append_detail("1", single_lpn, single_serial)
+                split_groups.append(
+                    _split_group(child_indexes, split_summary_values)
+                )
             # 其他所有不匹配场景，保留原始一行，LPN/Serial逗号拼接不拆分
             else:
-                rows.append([
-                    order_type, tracking_no, invoice_no, item_num, raw_qty_str, raw_lpn_str, raw_serial_str,
-                    lot, expire, country_of_origin, sales_order, customer_po,
-                    doc_date, delivery, carrier, hawb
-                ])
-    return rows, split_groups
+                append_detail(raw_qty_str, raw_lpn_str, raw_serial_str)
+    return RecognitionResult(
+        header_values=_named_values({
+            "INVOICE NO": invoice_no,
+            "DATE": doc_date,
+            "DELIVERY": delivery,
+            "CARRIER": carrier,
+            "HAWB": hawb,
+        }),
+        detail_lines=tuple(detail_lines),
+        split_groups=tuple(split_groups),
+    )
 
 
 def parse_commit_result(select_text, commit_result, filename):
-    """按当前模板解析单份 OCR 识别结果，返回 (明细行列表, 拆分汇总元数据)。"""
+    """按当前模板解析单份 OCR 识别结果，返回具名字段识别结果。"""
     if select_text == "GE-ORACLE拣货单":
         return _parse_oracle_picklist(commit_result, filename)
     elif select_text == "GE-OSCAR拣货单":
