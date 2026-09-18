@@ -125,6 +125,8 @@ customer_status_label = None
 customer_use_button = None
 customer_refresh_button = None
 customer_copy_status_after_id = None
+customer_target_document_id = ""
+customer_target_label = None
 
 MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
 MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
@@ -1095,6 +1097,7 @@ def _document_inputs(raw_file_results):
 def _replace_preview_table(select_text, raw_file_results):
     """创建当前会话唯一的权威预览表格。"""
     global preview_table
+    _set_customer_backfill_target("")
     preview_table = preview_model.PreviewTable(
         select_text,
         _document_inputs(raw_file_results),
@@ -1114,6 +1117,7 @@ def _new_preview_file_info(snapshot):
         "medical_warning_label": None,
         "consignee_label": None,
         "consignee_entry": None,
+        "consignee_button": None,
         "consignee_value_var": None,
     }
 
@@ -1250,7 +1254,7 @@ def _handle_preview_tree_command(tree, command, payload):
 
 
 def _refresh_file_medical_device_display(file_result, snapshot, select_text):
-    """按权威快照刷新医疗器械提示和客商编码默认值。"""
+    """按权威快照刷新医疗器械提示和客商编码选择状态。"""
     warning_label = file_result.get("medical_warning_label")
     if warning_label is None:
         return
@@ -1270,10 +1274,12 @@ def _refresh_file_medical_device_display(file_result, snapshot, select_text):
 
     consignee_entry = file_result.get("consignee_entry")
     consignee_label = file_result.get("consignee_label")
+    consignee_button = file_result.get("consignee_button")
     consignee_value_var = file_result.get("consignee_value_var")
     if (
         consignee_entry is None
         or consignee_label is None
+        or consignee_button is None
         or consignee_value_var is None
     ):
         return
@@ -1281,22 +1287,94 @@ def _refresh_file_medical_device_display(file_result, snapshot, select_text):
         if (
             not consignee_entry.winfo_exists()
             or not consignee_label.winfo_exists()
+            or not consignee_button.winfo_exists()
         ):
             return
     except tk.TclError:
         return
 
-    if has_medical_device:
-        header_value = snapshot.header_values.get("客商编码", "")
-        consignee_label.config(
-            font=BODY_FONT_BOLD, fg=MEDICAL_DEVICE_WARNING_COLOR
+    header_value = snapshot.header_values.get("客商编码", "")
+    requires_consignee = (
+        has_medical_device and not header_value.strip()
+    )
+    consignee_label.config(
+        text=(
+            "客商编码（医疗器械必填）"
+            if requires_consignee else "客商编码"
+        ),
+        font=BODY_FONT_BOLD if requires_consignee else BODY_FONT,
+        fg=(
+            MEDICAL_DEVICE_WARNING_COLOR
+            if requires_consignee else "#6B7280"
+        ),
+    )
+    consignee_entry.config(state=tk.DISABLED)
+    consignee_button.config(
+        state=(
+            tk.NORMAL
+            if snapshot.consignee_backfill_allowed else tk.DISABLED
         )
-        consignee_entry.config(state=tk.DISABLED)
-    else:
-        header_value = snapshot.header_values.get("客商编码", "")
-        consignee_label.config(font=BODY_FONT, fg="#6B7280")
-        consignee_entry.config(state=tk.DISABLED)
+    )
     consignee_value_var.set(header_value)
+    _refresh_customer_backfill_state()
+
+
+def _customer_target_snapshot(document_id, require_allowed=False):
+    """返回客商回填目标对应的预览快照。"""
+    if not document_id or preview_table is None:
+        return None
+    snapshot = _snapshot_for_info(_preview_file_info(document_id))
+    if (
+        snapshot is None
+        or snapshot.template not in (
+            "GE-ORACLE拣货单", "GE-OSCAR拣货单"
+        )
+        or (require_allowed and not snapshot.consignee_backfill_allowed)
+    ):
+        return None
+    return snapshot
+
+
+def _refresh_customer_target_display():
+    """刷新客商窗口中的回填目标说明。"""
+    if customer_target_label is None:
+        return
+    try:
+        if not customer_target_label.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    snapshot = _customer_target_snapshot(customer_target_document_id)
+    if snapshot is None:
+        customer_target_label.config(
+            text="回填目标：未选择需填写客商编码的医疗器械单据",
+            fg="#6B7280",
+        )
+    elif snapshot.consignee_backfill_allowed:
+        customer_target_label.config(
+            text=f"回填目标：{snapshot.metadata.filename}",
+            fg="#475569",
+        )
+    else:
+        customer_target_label.config(
+            text=(
+                f"回填目标：{snapshot.metadata.filename}"
+                "（当前未命中医疗器械）"
+            ),
+            fg=MEDICAL_DEVICE_WARNING_COLOR,
+        )
+
+
+def _set_customer_backfill_target(document_id):
+    """设置客商窗口允许回填的预览单据。"""
+    global customer_target_document_id
+    snapshot = _customer_target_snapshot(
+        document_id, require_allowed=True
+    )
+    customer_target_document_id = (
+        snapshot.metadata.document_id if snapshot is not None else ""
+    )
     _refresh_customer_backfill_state()
 
 
@@ -1705,17 +1783,18 @@ def _set_customer_window_status(text, error=False):
 
 
 def _customer_backfill_error():
-    """返回当前页签不允许回填客商编码的原因。"""
+    """返回当前客商回填目标不允许写入的原因。"""
     if preview_select_text not in (
         "GE-ORACLE拣货单", "GE-OSCAR拣货单"
     ):
         return "当前单据模板不支持回填客商编码"
-    info = _active_preview_file()
-    if info is None:
-        return "请先选择 ORACLE 或 OSCAR 拣货单页签"
-    snapshot = _active_snapshot()
-    if snapshot is None or not snapshot.consignee_backfill_allowed:
-        return "当前页签未命中医疗器械，不能回填客商编码"
+    if not customer_target_document_id:
+        return "未选择需填写客商编码的医疗器械单据"
+    snapshot = _customer_target_snapshot(customer_target_document_id)
+    if snapshot is None:
+        return "客商回填目标已失效，请重新选择客商入口"
+    if not snapshot.consignee_backfill_allowed:
+        return "当前客商回填目标未命中医疗器械，不能回填客商编码"
     return ""
 
 
@@ -1736,7 +1815,8 @@ def _selected_customer_code():
 
 
 def _refresh_customer_backfill_state():
-    """按当前页签与选中行刷新「使用选中客商」按钮。"""
+    """按客商回填目标与选中行刷新窗口状态。"""
+    _refresh_customer_target_display()
     if customer_use_button is None:
         return
     try:
@@ -1794,7 +1874,7 @@ def _on_customer_selection_changed(_event=None):
 
 
 def _use_selected_customer():
-    """把选中客商编码回填到执行操作时的当前预览页签。"""
+    """把选中客商编码回填到客商窗口打开时选定的预览单据。"""
     error = _customer_backfill_error()
     if error:
         _set_customer_window_status(error, error=True)
@@ -1803,26 +1883,20 @@ def _use_selected_customer():
     if not customer_id:
         _set_customer_window_status("请先选择一条客商记录", error=True)
         return
-    info = _active_preview_file()
-    if info is None:
-        _set_customer_window_status(
-            "请先选择 ORACLE 或 OSCAR 拣货单页签", error=True
-        )
-        return
 
     try:
         preview_table.backfill_consignee(
-            info["document_id"], customer_id
+            customer_target_document_id, customer_id
         )
     except ValueError as exc:
         _set_customer_window_status(str(exc), error=True)
         return
-    _render_preview_document(info["document_id"])
+    _render_preview_document(customer_target_document_id)
     close_customer_window()
 
 
 def _on_customer_row_double_click(event):
-    """双击客商行时按当前页签校验后回填。"""
+    """双击客商行时按客商回填目标校验后回填。"""
     if customer_tree is None:
         return
     row_id = customer_tree.identify_row(event.y)
@@ -1838,6 +1912,7 @@ def close_customer_window():
     global customer_window, customer_tree, customer_code_search_var
     global customer_name_search_var, customer_status_label
     global customer_use_button, customer_refresh_button
+    global customer_target_document_id, customer_target_label
     _cancel_customer_copy_status_timer()
     if customer_window is not None:
         try:
@@ -1851,13 +1926,19 @@ def close_customer_window():
     customer_status_label = None
     customer_use_button = None
     customer_refresh_button = None
+    customer_target_document_id = ""
+    customer_target_label = None
 
 
-def open_customer_window():
-    """打开或聚焦非模态客商查询窗口。"""
+def open_customer_window(target_document_id=None):
+    """打开或聚焦非模态客商查询窗口，并更新回填目标。"""
     global customer_window, customer_tree, customer_code_search_var
     global customer_name_search_var, customer_status_label
     global customer_use_button, customer_refresh_button
+    global customer_target_label
+    if target_document_id is None:
+        target_document_id = _active_preview_document_id()
+    _set_customer_backfill_target(target_document_id)
     if customer_window is not None:
         try:
             if customer_window.winfo_exists():
@@ -1887,6 +1968,15 @@ def open_customer_window():
 
     body = tk.Frame(customer_window)
     body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    customer_target_label = tk.Label(
+        body,
+        text="回填目标：未选择需填写客商编码的医疗器械单据",
+        font=BODY_FONT,
+        anchor="w",
+        fg="#6B7280",
+    )
+    customer_target_label.pack(fill=tk.X, pady=(0, 8))
 
     search_frame = tk.Frame(body)
     search_frame.pack(fill=tk.X, pady=(0, 8))
@@ -2179,14 +2269,27 @@ def _build_header_form(parent, file_result, header_fields, header_values, select
                     values=order_type_labels,
                 ).pack(fill=tk.X)
             elif field == "客商编码":
+                consignee_frame = tk.Frame(cell)
+                consignee_frame.pack(fill=tk.X)
                 entry = tk.Entry(
-                    cell,
+                    consignee_frame,
                     textvariable=value_var,
                     state=tk.DISABLED,
                     disabledforeground=DISABLED_FOREGROUND,
                 )
-                entry.pack(fill=tk.X)
+                entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                consignee_button = tk.Button(
+                    consignee_frame,
+                    text="选择客商",
+                    command=lambda document_id=file_result["document_id"]:
+                        open_customer_window(document_id),
+                    font=BUTTON_FONT,
+                    disabledforeground=DISABLED_FOREGROUND,
+                    state=tk.DISABLED,
+                )
+                consignee_button.pack(side=tk.LEFT, padx=(4, 0))
                 file_result["consignee_entry"] = entry
+                file_result["consignee_button"] = consignee_button
                 file_result["consignee_value_var"] = value_var
             else:
                 tk.Entry(cell, textvariable=value_var).pack(fill=tk.X)
@@ -2545,6 +2648,7 @@ def clear_preview():
     active_tree = None
     continue_query_active = False
     preview_select_text = ""
+    _set_customer_backfill_target("")
     current_file_label.config(text="当前预览文件：未选择")
     continue_btn.config(state=tk.DISABLED)
     refresh_export_state()
