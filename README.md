@@ -61,7 +61,8 @@
 - 客商窗口展示客商编码、客商名称、地址、联系人和联系人电话，顶部提供客商编码、客商名称与地址三个本地实时模糊搜索框，所有非空条件同时满足才显示，并提供「清除」一次清空三个搜索框；底部提供「使用选中客商」「重新查询」「关闭」，重新查询期间保留当前列表和搜索内容、禁用查询按钮，失败保留最近一次成功列表，成功（包括空列表）整体覆盖
 - 客商编码回填目标在点击字段级「选择客商」按钮或底部「查询客商」入口时固定到对应 ORACLE/OSCAR 医疗器械单据，之后切换主界面页签不改变目标，再次点击任一入口会更新目标文件名；无有效目标时仍可查询客商，但「使用选中客商」和字段级按钮禁用，客商窗口目标说明提示未选择可回填单据；可双击客商行或点击「使用选中客商」，只将客商编码覆盖写入固定目标，成功后关闭客商窗口，不修改名称、地址、联系人或电话
 - 客商窗口「使用选中客商」左侧新增「新增客商」；点击后打开独立模态窗口录入客商编码、客商名称、客商地址、联系人和联系人电话，五项均必填，客商编码输入框右侧提供「生成」按钮直接生成八位数字编码，确认后调用 Flux WMS `putCustomer` 并展示接口回告；发送成功或失败后弹窗保留，可清空后继续录入；成功后后台重新查询客商列表
-- 「查询医疗器械」与「查询客商」列表支持只读单元格复制：点击单元格后按 `Ctrl/Cmd+C`，或右键选择「复制单元格」，即可复制当前显示文字；复制成功状态显示约两秒，列表刷新后不保留旧单元格，不提供编辑或业务回写
+- 「查询客商」右侧新增「查询下单方」入口，打开独立单实例、非模态列表窗口；复用「查询客商」接口地址，仅将 `customerType` 改为 `IP`。窗口展示下单方编码、下单方名称、地址、联系人和联系人电话，顶部提供下单方编码、下单方名称与地址三个本地实时交集过滤框及「清除」，底部提供「重新查询」「新增下单方」「关闭」；新增窗口的五项必填字段、生成编码、接口回告及保留弹窗行为与新增客商一致，成功后后台刷新下单方列表但不提供选中回填或双击回填；其列表、搜索条件、查询状态和后台线程与客商窗口完全隔离
+- 「查询医疗器械」「查询客商」与「查询下单方」列表支持只读单元格复制：点击单元格后按 `Ctrl/Cmd+C`，或右键选择「复制单元格」，即可复制当前显示文字；复制成功状态显示约两秒，列表刷新后不保留旧单元格，不提供编辑或业务回写
 - 新增产品时序列号/批次/效期/危险品/球管五个属性未勾选时，`putSKU` 报文的 `skuGroup1-5` 统一传 `N`；勾选时仍分别传 `SNY`/`LOTY`/`EXPY`/`HAZARDY`/`TUBE`，`freightClass` 与有效期字段保持现状
 - 接口发送仅在 HTTP 200 且回告顶层 `returnFlag` 为 `"1"` 或 `1` 时判定成功，其他情况判为失败；成功和失败后都可在同一只读报文窗口点击「重新发送」，`resultInfo` 明细级错误不改变整体判定
 - 接口发送与新增产品的返回区使用跨平台 Tk 原生全宽状态条和文本边框：发送中为蓝色、成功为绿色、失败为红色、未发送为灰色；状态条始终保留明确文字，避免仅依赖颜色判断
@@ -86,12 +87,12 @@
 - 批量处理时按文件显示处理进度条，解析结果返回预览后进度条显示完成；处理失败时进度条变红
 - 处理进度条从独立整行移入顶部「中止」按钮右侧，使用短状态文字 + 自适应进度条，不再占用预览明细表格上方空间
 - 程序启动时默认按当前系统最大可用工作区显示，Windows 使用系统最大化，Linux 使用兼容的最大窗口方式，避免旧固定窗口尺寸挤压顶部布局
-- 主界面默认不显示处理日志，释放纵向空间给预览明细表格；底部「删除行」右侧依次提供「查询日志」「查询医疗器械」「查询客商」「新增产品」入口，点击「查询日志」打开独立可滚动日志窗口查看并实时追加本次运行日志
+- 主界面默认不显示处理日志，释放纵向空间给预览明细表格；底部「删除行」右侧依次提供「查询日志」「查询医疗器械」「查询客商」「查询下单方」「新增产品」入口，点击「查询日志」打开独立可滚动日志窗口查看并实时追加本次运行日志
 - 日志统一走标准 `logging`，不再覆盖标准输出
 - 当前会话的全部预览单据、拆分分组、编辑命令与撤销记录由无 Tk 的 `preview_table.PreviewTable` 权威模型持有；模型在构造时直接按单据模板取得完整字段与预览布局，调用方不再重复传递 schema；`tool.py` 中的 Tk 控件只渲染不可变快照并转发编辑、插入、粘贴、删除和撤销命令，当前文件页签选择由 Tk 展示层管理；导出与 WMS 报文使用同一份快照与校验结果
 - 三种单据的 OCR 解析结果统一为具名字段 `RecognitionResult`；`PreviewTable` 按模板 schema 校验字段、补齐空值并投影为内部预览结构，不再依赖调用方传入的完整行位置索引
 - 单据快照到导出或接口发送的校验、订单类型与日期等语义归一化、字段映射和 artifact 构建统一由 `delivery_preparation.prepare_delivery()` 完成；`document_template.py` 定义单据模板 schema 与语义归一化规则，`excel_export.py` / `wms_client.py` 仅作为目标 adapter，Tk 只负责界面编排与提示
-- 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`document_template.py`、`delivery_preparation.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、单据模板规则、交付准备、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 请求发送、医疗器械目录查询缓存和客商查询
+- 代码按模块拆分：`tool.py` 作为入口，`preview_table.py`、`document_template.py`、`delivery_preparation.py`、`config.py`、`logging_utils.py`、`ocr_client.py`、`parsers.py`、`feishu_client.py`、`excel_export.py`、`mock_data.py`、`wms_client.py`、`medical_device_client.py`、`customer_client.py` 分别承载预览权威状态、单据模板规则、交付准备、配置、日志、OCR、解析、飞书、导出、模拟数据、WMS 请求发送、医疗器械目录查询缓存和客商/下单方查询
 - 支持 PyInstaller onedir 打包为 Windows 无控制台程序，Excel 模板随包分发；导出目录每次由人工选择，并默认打开上次选择的目录
 - Windows 打包版预览表格切换 `clam` 主题保证斑马色行背景显示，并使用 Windows 可读表头字号
 
@@ -196,8 +197,8 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 - Flux WMS `putOriginalSalesOrder` 接口地址、`apptoken`、`sign`；固定货主 `GEHC`、固定仓库 `WH004078` 与采购单一致，ORACLE/OSCAR 报文字段映射在 `delivery_preparation.py`，`consigneeId` 统一读取 `PreviewTable` 派生的有效客商编码，不在报文层重复回退
 - Flux WMS `putSKU` 接口地址、`apptoken`、空 `timestamp`、`sign`；一次请求按固定顺序批量新增 `GEHC`、`GEHC-BF`、`GEHC-DBY`、`GEHC-ZLKC` 四个货主，只有 `customerId` 不同；新增产品表单校验与六类选择框、有效期字段映射集中在 `wms_client.py`
 - Flux WMS `QUERYMD` 医疗器械目录查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，目录记录缓存读取、覆盖和物料编码匹配集中在 `medical_device_client.py`
-- Flux WMS `QUERYCO` 客商查询地址；固定货主 `GEHC`、固定仓库 `WH004078`、`customerType=CO`，请求、回告解析、列表转换、本地三条件过滤和客商编码生成集中在 `customer_client.py`
-- Flux WMS `putCustomer` 接口地址、`apptoken`、空 `timestamp`、`sign`；固定 `customerType=CO`、`activeFlag=Y`、`refOwner=GEHC`、`refWarehouseID=WH004078`，五项必填校验与报文字段映射集中在 `wms_client.py`
+- Flux WMS `QUERYCO` 客商/下单方查询地址；固定货主 `GEHC`、固定仓库 `WH004078`，客商查询使用 `customerType=CO`，下单方查询使用 `customerType=IP`；请求、回告解析、列表转换、本地三条件过滤和客商编码生成集中在 `customer_client.py`
+- Flux WMS `putCustomer` 接口地址、`apptoken`、空 `timestamp`、`sign`；新增客商使用 `customerType=CO`，新增下单方使用 `customerType=IP`，两者固定 `activeFlag=Y`、`refOwner=GEHC`、`refWarehouseID=WH004078`，五项必填校验与报文字段映射集中在 `wms_client.py`
 
 当前项目仅内部使用，采用硬编码方式管理以上配置。所有地址、密钥、模型 ID、字段名和解析规则都写在代码中，不迁移至外部环境变量或者配置文件中。
 
@@ -220,6 +221,8 @@ APT_MIRROR="https://mirrors.aliyun.com" bash build_linux.sh
 
 ## 更新记录
 
+- 2026-09-23: [新增] 底部「查询客商」右侧新增「查询下单方」窗口，复用 `QUERYCO` 接口并以 `customerType=IP` 查询；窗口展示下单方编码、名称、地址、联系人和联系人电话，支持三个字段交集过滤及只读复制，底部仅提供「重新查询」「关闭」，不回填单据
+- 2026-09-23: [新增] 查询下单方窗口「重新查询」右侧新增「新增下单方」，复用新增客商弹窗交互，调用同一 `putCustomer` 接口并将 `customerType` 改为 `IP`；编码生成同时避开已有客商和下单方编码，新增成功后后台刷新下单方列表
 - 2026-09-23: [变更] Flux WMS `QUERYCO` 客商查询请求头新增固定字段 `customerType=CO`
 - 2026-09-18: [新增] 客商查询窗口新增地址模糊搜索及「清除」按钮，地址与客商编码、客商名称条件取交集；新增客商窗口的客商编码输入框新增「生成」按钮，可生成允许前导零的八位数字编码并避开当前列表已有编码
 - 2026-09-18: [新增] 客商查询窗口「使用选中客商」左侧新增「新增客商」；弹窗录入客商编码、名称、地址、联系人和联系人电话五项必填信息，调用 Flux WMS `putCustomer` 并展示回告，成功后后台重新查询客商列表

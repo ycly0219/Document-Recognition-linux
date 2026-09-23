@@ -114,12 +114,12 @@ def build_put_sku_payload(form):
     return {"data": {"header": headers}}
 
 
-def validate_put_customer_form(form):
-    """新增客商表单校验，返回空字符串表示通过。"""
+def validate_put_customer_form(form, subject="客商"):
+    """校验新增客商或下单方表单，返回空字符串表示通过。"""
     fields = (
-        ("customer_id", "客商编码"),
-        ("customer_name", "客商名称"),
-        ("address", "客商地址"),
+        ("customer_id", f"{subject}编码"),
+        ("customer_name", f"{subject}名称"),
+        ("address", f"{subject}地址"),
         ("contact", "联系人"),
         ("contact_tel", "联系人电话"),
     )
@@ -129,11 +129,11 @@ def validate_put_customer_form(form):
     return ""
 
 
-def build_put_customer_payload(form):
-    """按新增客商表单组装 Flux WMS putCustomer 报文。"""
+def build_put_customer_payload(form, customer_type="CO"):
+    """按新增客商或下单方表单组装 Flux WMS putCustomer 报文。"""
     header = {
         "customerId": _text(form.get("customer_id")),
-        "customerType": "CO",
+        "customerType": customer_type,
         "customerDescr1": _text(form.get("customer_name")),
         "address1": _text(form.get("address")),
         "contact1": _text(form.get("contact")),

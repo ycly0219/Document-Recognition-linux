@@ -14,6 +14,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from config import FEISHU_CALL_TIMES, MODEL_MAP
 from customer_client import (
     CUSTOMER_COLUMNS,
+    ORDERING_PARTY_COLUMNS,
     customer_record_display_rows,
     filter_customer_record_display_rows,
     generate_customer_id,
@@ -105,6 +106,7 @@ add_customer_window = None
 add_customer_send_button = None
 add_customer_response_text = None
 add_customer_response_status = None
+add_customer_origin_button = None
 wms_window_response_status = None
 medical_device_catalog = []
 medical_device_skus = frozenset()
@@ -139,6 +141,21 @@ customer_refresh_button = None
 customer_copy_status_after_id = None
 customer_target_document_id = ""
 customer_target_label = None
+ordering_party_records = []
+ordering_party_query_thread = None
+ordering_party_query_pending = False
+ordering_party_query_lock = threading.Lock()
+ordering_party_query_active = False
+ordering_party_query_status = "尚未查询下单方信息"
+ordering_party_window = None
+ordering_party_tree = None
+ordering_party_code_search_var = None
+ordering_party_name_search_var = None
+ordering_party_address_search_var = None
+ordering_party_status_label = None
+ordering_party_refresh_button = None
+ordering_party_add_button = None
+ordering_party_copy_status_after_id = None
 
 MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
 MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
@@ -794,7 +811,7 @@ def _replace_product_response(token, text, state="neutral"):
 
 
 def _replace_add_customer_response(token, text, state="neutral"):
-    """用最新客商接口回告覆盖新增客商窗口返回区。"""
+    """用最新接口回告覆盖新增客商或下单方窗口返回区。"""
     if (
         add_customer_response_text is None
         or id(add_customer_response_text) != token
@@ -1948,9 +1965,10 @@ def _on_customer_row_double_click(event):
 
 
 def close_add_customer_window():
-    """关闭新增客商窗口并清理界面引用。"""
+    """关闭新增客商或下单方窗口并清理界面引用。"""
     global add_customer_window, add_customer_send_button
     global add_customer_response_text, add_customer_response_status
+    global add_customer_origin_button
     if add_customer_window is not None:
         try:
             add_customer_window.destroy()
@@ -1960,12 +1978,20 @@ def close_add_customer_window():
     add_customer_send_button = None
     add_customer_response_text = None
     add_customer_response_status = None
+    add_customer_origin_button = None
 
 
-def open_add_customer_window(parent=None):
-    """打开新增客商模态窗口，录入后直接发送客商主数据。"""
+def open_add_customer_window(
+    parent=None,
+    subject="客商",
+    customer_type="CO",
+    existing_records=None,
+    origin_button=None,
+):
+    """打开新增客商或下单方模态窗口并发送对应主数据。"""
     global add_customer_window, add_customer_send_button
     global add_customer_response_text, add_customer_response_status
+    global add_customer_origin_button
     if add_customer_send_active:
         return
     if add_customer_window is not None:
@@ -1984,8 +2010,13 @@ def open_add_customer_window(parent=None):
     except tk.TclError:
         return
 
+    records = customer_records if existing_records is None else existing_records
+    add_customer_origin_button = (
+        customer_add_button if origin_button is None else origin_button
+    )
+
     add_customer_window = tk.Toplevel(parent)
-    add_customer_window.title("新增客商")
+    add_customer_window.title(f"新增{subject}")
     add_customer_window.geometry("720x650")
     add_customer_window.minsize(620, 560)
     add_customer_window.transient(parent)
@@ -2009,12 +2040,12 @@ def open_add_customer_window(parent=None):
     def generate_add_customer_id():
         existing_ids = {
             str(record.get("customerId", "")).strip()
-            for record in customer_records
+            for record in records
         }
         customer_id_var.set(generate_customer_id(existing_ids))
 
     tk.Label(
-        form, text="客商编码（必填）", fg="#B42318",
+        form, text=f"{subject}编码（必填）", fg="#B42318",
         font=BUTTON_FONT, anchor="w",
     ).grid(row=0, column=0, sticky="w", pady=(0, 4))
     customer_id_entry = tk.Entry(
@@ -2030,7 +2061,7 @@ def open_add_customer_window(parent=None):
     )
 
     tk.Label(
-        form, text="客商名称（必填）", fg="#B42318",
+        form, text=f"{subject}名称（必填）", fg="#B42318",
         font=BUTTON_FONT, anchor="w",
     ).grid(row=2, column=0, sticky="w", pady=(0, 4))
     tk.Entry(
@@ -2038,7 +2069,7 @@ def open_add_customer_window(parent=None):
     ).grid(row=3, column=0, sticky="ew", pady=(0, 10))
 
     tk.Label(
-        form, text="客商地址（必填）", fg="#B42318",
+        form, text=f"{subject}地址（必填）", fg="#B42318",
         font=BUTTON_FONT, anchor="w",
     ).grid(row=4, column=0, sticky="w", pady=(0, 4))
     address_text = tk.Text(
@@ -2102,16 +2133,24 @@ def open_add_customer_window(parent=None):
         if add_customer_send_active:
             return
         form_values = collect_add_customer_form()
-        error = validate_put_customer_form(form_values)
+        error = validate_put_customer_form(
+            form_values, subject=subject
+        )
         if error:
             messagebox.showwarning(
                 "校验失败", error, parent=add_customer_window
             )
             return
-        payload = build_put_customer_payload(form_values)
+        payload = build_put_customer_payload(
+            form_values, customer_type=customer_type
+        )
         add_customer_send_active = True
-        if customer_add_button is not None:
-            customer_add_button.config(state=tk.DISABLED)
+        if add_customer_origin_button is not None:
+            try:
+                if add_customer_origin_button.winfo_exists():
+                    add_customer_origin_button.config(state=tk.DISABLED)
+            except tk.TclError:
+                pass
         add_customer_send_button.config(
             state=tk.DISABLED, text="发送中..."
         )
@@ -2121,7 +2160,7 @@ def open_add_customer_window(parent=None):
         )
         add_customer_thread = threading.Thread(
             target=add_customer_send_worker,
-            args=(payload, token),
+            args=(payload, token, subject, customer_type),
             daemon=True,
         )
         add_customer_thread.start()
@@ -2150,29 +2189,38 @@ def open_add_customer_window(parent=None):
     add_customer_window.after(100, customer_id_entry.focus_set)
 
 
-def add_customer_send_worker(payload, token):
-    """后台发送 putCustomer 客商主数据报文并回传结果。"""
-    print_log("正在发送WMS新增客商报文...")
+def add_customer_send_worker(
+    payload, token, subject="客商", customer_type="CO"
+):
+    """后台发送 putCustomer 客商或下单方主数据报文并回传结果。"""
+    print_log(f"正在发送WMS新增{subject}报文...")
     try:
         response = send_put_customer(payload)
         text = format_wms_response(response)
-        print_log(f"WMS客商接口回告：{text[:200]}")
+        print_log(f"WMS{subject}接口回告：{text[:200]}")
         success = is_wms_send_success(response)
         if success:
             result_text = f"发送成功\n\n{text}"
         else:
             result_text = f"发送失败：HTTP 状态或 returnFlag 不满足\n\n{text}"
         ui_message_queue.put(
-            ("add_customer_send_result", token, success, result_text)
+            (
+                "add_customer_send_result",
+                token,
+                success,
+                result_text,
+                customer_type,
+            )
         )
     except Exception as e:
-        print_log(f"WMS客商接口发送失败: {e}")
+        print_log(f"WMS{subject}接口发送失败: {e}")
         ui_message_queue.put(
             (
                 "add_customer_send_result",
                 token,
                 False,
                 f"发送失败：{e}",
+                customer_type,
             )
         )
 
@@ -2455,6 +2503,372 @@ def _start_customer_query(reason):
         )
         customer_query_thread.start()
     _set_customer_query_state(True, "正在查询客商信息...")
+    win.after(100, poll_ui_queue)
+
+
+def _render_ordering_party_window_status(text, error=False):
+    if ordering_party_status_label is None:
+        return
+    try:
+        if ordering_party_status_label.winfo_exists():
+            ordering_party_status_label.config(
+                text=text,
+                fg="#B42318" if error else "#475569",
+            )
+    except tk.TclError:
+        pass
+
+
+def _cancel_ordering_party_copy_status_timer():
+    global ordering_party_copy_status_after_id
+    if ordering_party_copy_status_after_id is None:
+        return
+    try:
+        win.after_cancel(ordering_party_copy_status_after_id)
+    except (tk.TclError, ValueError):
+        pass
+    ordering_party_copy_status_after_id = None
+
+
+def _restore_ordering_party_copy_status():
+    global ordering_party_copy_status_after_id
+    ordering_party_copy_status_after_id = None
+    _render_ordering_party_window_status(ordering_party_query_status)
+
+
+def _show_ordering_party_copy_status(message, error=False):
+    global ordering_party_copy_status_after_id
+    _cancel_ordering_party_copy_status_timer()
+    if ordering_party_status_label is None:
+        return
+    try:
+        if not ordering_party_status_label.winfo_exists():
+            return
+        ordering_party_status_label.config(
+            text=message,
+            fg="#B42318" if error else "#067647",
+        )
+    except tk.TclError:
+        return
+    ordering_party_copy_status_after_id = win.after(
+        COPY_STATUS_DURATION_MS,
+        _restore_ordering_party_copy_status,
+    )
+
+
+def _set_ordering_party_window_status(text, error=False):
+    """更新下单方窗口状态栏，不弹模态错误框。"""
+    _cancel_ordering_party_copy_status_timer()
+    _render_ordering_party_window_status(text, error)
+
+
+def _refresh_ordering_party_window():
+    """按三个搜索框的当前值刷新下单方列表。"""
+    if ordering_party_tree is None:
+        return
+    try:
+        if not ordering_party_tree.winfo_exists():
+            return
+    except tk.TclError:
+        return
+
+    rows = customer_record_display_rows(ordering_party_records)
+    customer_code = (
+        ordering_party_code_search_var.get()
+        if ordering_party_code_search_var is not None else ""
+    )
+    customer_name = (
+        ordering_party_name_search_var.get()
+        if ordering_party_name_search_var is not None else ""
+    )
+    customer_address = (
+        ordering_party_address_search_var.get()
+        if ordering_party_address_search_var is not None else ""
+    )
+    rows = filter_customer_record_display_rows(
+        rows, customer_code, customer_name, customer_address
+    )
+
+    ordering_party_tree.clear_copied_cell()
+    ordering_party_tree.delete(*ordering_party_tree.get_children())
+    for row in rows:
+        ordering_party_tree.insert("", tk.END, values=row)
+
+
+def _on_ordering_party_search_changed(*_args):
+    """任一下单方搜索条件发生变化时立即本地过滤。"""
+    _refresh_ordering_party_window()
+
+
+def close_ordering_party_window():
+    """关闭下单方窗口并允许下次打开时重新查询。"""
+    global ordering_party_window, ordering_party_tree
+    global ordering_party_code_search_var
+    global ordering_party_name_search_var
+    global ordering_party_address_search_var
+    global ordering_party_status_label
+    global ordering_party_refresh_button
+    global ordering_party_add_button
+    close_add_customer_window()
+    _cancel_ordering_party_copy_status_timer()
+    if ordering_party_window is not None:
+        try:
+            ordering_party_window.destroy()
+        except tk.TclError:
+            pass
+    ordering_party_window = None
+    ordering_party_tree = None
+    ordering_party_code_search_var = None
+    ordering_party_name_search_var = None
+    ordering_party_address_search_var = None
+    ordering_party_status_label = None
+    ordering_party_refresh_button = None
+    ordering_party_add_button = None
+
+
+def open_ordering_party_window():
+    """打开或聚焦非模态下单方查询窗口。"""
+    global ordering_party_window, ordering_party_tree
+    global ordering_party_code_search_var
+    global ordering_party_name_search_var
+    global ordering_party_address_search_var
+    global ordering_party_status_label
+    global ordering_party_refresh_button
+    global ordering_party_add_button
+    if ordering_party_window is not None:
+        try:
+            if ordering_party_window.winfo_exists():
+                ordering_party_window.deiconify()
+                ordering_party_window.lift()
+                ordering_party_window.focus_force()
+                return
+        except tk.TclError:
+            ordering_party_window = None
+            ordering_party_tree = None
+
+    width, height = 1050, 620
+    win.update_idletasks()
+    parent_x = win.winfo_rootx()
+    parent_y = win.winfo_rooty()
+    parent_width = win.winfo_width()
+    parent_height = win.winfo_height()
+    x = parent_x + max((parent_width - width) // 2, 0)
+    y = parent_y + max((parent_height - height) // 2, 0)
+
+    ordering_party_window = tk.Toplevel(win)
+    ordering_party_window.title("查询下单方")
+    ordering_party_window.geometry(f"{width}x{height}+{x}+{y}")
+    ordering_party_window.minsize(760, 420)
+    ordering_party_window.transient(win)
+    ordering_party_window.protocol(
+        "WM_DELETE_WINDOW", close_ordering_party_window
+    )
+
+    body = tk.Frame(ordering_party_window)
+    body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    search_frame = tk.Frame(body)
+    search_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(
+        search_frame, text="下单方编码", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    ordering_party_code_search_var = tk.StringVar()
+    code_entry = tk.Entry(
+        search_frame, textvariable=ordering_party_code_search_var,
+        font=BODY_FONT,
+    )
+    code_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+    tk.Label(
+        search_frame, text="下单方名称", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    ordering_party_name_search_var = tk.StringVar()
+    name_entry = tk.Entry(
+        search_frame, textvariable=ordering_party_name_search_var,
+        font=BODY_FONT,
+    )
+    name_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+    tk.Label(
+        search_frame, text="地址", font=BODY_FONT
+    ).pack(side=tk.LEFT, padx=(0, 8))
+    ordering_party_address_search_var = tk.StringVar()
+    address_entry = tk.Entry(
+        search_frame, textvariable=ordering_party_address_search_var,
+        font=BODY_FONT,
+    )
+    address_entry.pack(
+        side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 18)
+    )
+
+    def clear_ordering_party_search():
+        ordering_party_code_search_var.set("")
+        ordering_party_name_search_var.set("")
+        ordering_party_address_search_var.set("")
+
+    tk.Button(
+        search_frame, text="清除",
+        command=clear_ordering_party_search,
+        padx=12, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
+    ordering_party_code_search_var.trace_add(
+        "write", _on_ordering_party_search_changed
+    )
+    ordering_party_name_search_var.trace_add(
+        "write", _on_ordering_party_search_changed
+    )
+    ordering_party_address_search_var.trace_add(
+        "write", _on_ordering_party_search_changed
+    )
+
+    footer = tk.Frame(body)
+    footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+    ordering_party_status_label = tk.Label(
+        footer,
+        text=ordering_party_query_status,
+        font=BODY_FONT,
+        anchor="w",
+        fg="#475569",
+    )
+    ordering_party_status_label.pack(
+        side=tk.LEFT, fill=tk.X, expand=True
+    )
+    tk.Button(
+        footer, text="关闭", command=close_ordering_party_window,
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    ).pack(side=tk.RIGHT)
+    ordering_party_add_button = tk.Button(
+        footer, text="新增下单方",
+        command=lambda: open_add_customer_window(
+            parent=ordering_party_window,
+            subject="下单方",
+            customer_type="IP",
+            existing_records=[*customer_records, *ordering_party_records],
+            origin_button=ordering_party_add_button,
+        ),
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    ordering_party_add_button.pack(side=tk.RIGHT, padx=(0, 15))
+    ordering_party_refresh_button = tk.Button(
+        footer, text="重新查询",
+        command=lambda: _start_ordering_party_query("手动重新查询"),
+        padx=15, font=BUTTON_FONT,
+        disabledforeground=DISABLED_FOREGROUND,
+    )
+    ordering_party_refresh_button.pack(side=tk.RIGHT, padx=(0, 15))
+
+    table_frame = tk.Frame(body)
+    table_frame.pack(fill=tk.BOTH, expand=True)
+    column_ids = tuple(
+        f"ordering_party_column_{index}"
+        for index in range(len(ORDERING_PARTY_COLUMNS))
+    )
+    ordering_party_tree = CopyableTreeview(
+        table_frame,
+        columns=column_ids,
+        show="headings",
+        selectmode="browse",
+        style="Preview.Treeview",
+        on_copy_status=_show_ordering_party_copy_status,
+    )
+    vertical_scrollbar = ttk.Scrollbar(
+        table_frame,
+        orient="vertical",
+        command=ordering_party_tree.yview,
+    )
+    horizontal_scrollbar = ttk.Scrollbar(
+        table_frame,
+        orient="horizontal",
+        command=ordering_party_tree.xview,
+    )
+    ordering_party_tree.configure(
+        yscrollcommand=vertical_scrollbar.set,
+        xscrollcommand=horizontal_scrollbar.set,
+    )
+    ordering_party_tree.grid(row=0, column=0, sticky="nsew")
+    vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+    horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+    table_frame.rowconfigure(0, weight=1)
+    table_frame.columnconfigure(0, weight=1)
+
+    column_widths = (140, 220, 300, 110, 140)
+    for index, title in enumerate(ORDERING_PARTY_COLUMNS):
+        ordering_party_tree.heading(
+            column_ids[index], text=title, anchor="center"
+        )
+        ordering_party_tree.column(
+            column_ids[index],
+            width=column_widths[index],
+            minwidth=90,
+            stretch=True,
+            anchor="center" if index < 2 else "w",
+        )
+
+    _set_ordering_party_query_state(
+        ordering_party_query_active, ordering_party_query_status
+    )
+    _refresh_ordering_party_window()
+    code_entry.focus_set()
+    _start_ordering_party_query("打开窗口")
+
+
+def _set_ordering_party_query_state(active, status):
+    """同步下单方窗口的查询状态和重新查询按钮。"""
+    global ordering_party_query_active, ordering_party_query_status
+    ordering_party_query_active = active
+    ordering_party_query_status = status
+    if ordering_party_refresh_button is not None:
+        try:
+            if ordering_party_refresh_button.winfo_exists():
+                ordering_party_refresh_button.config(
+                    state=tk.DISABLED if active else tk.NORMAL,
+                    text="查询中..." if active else "重新查询",
+                )
+        except tk.TclError:
+            pass
+    _set_ordering_party_window_status(status)
+
+
+def _ordering_party_query_worker(reason):
+    """后台查询下单方，失败时只回传错误并保留当前列表。"""
+    print_log(f"正在查询下单方信息：{reason}")
+    with ordering_party_query_lock:
+        try:
+            records = query_customer_records(customer_type="IP")
+        except Exception as exc:
+            print_log(f"下单方信息查询失败：{exc}")
+            ui_message_queue.put(
+                ("ordering_party_query_result", [], str(exc))
+            )
+            return
+    print_log(f"下单方信息查询完成：{len(records)} 条")
+    ui_message_queue.put(
+        ("ordering_party_query_result", records, "")
+    )
+
+
+def _start_ordering_party_query(reason):
+    """启动不阻塞主界面的下单方查询。"""
+    global ordering_party_query_thread, ordering_party_query_pending
+    if (
+        ordering_party_query_thread is not None
+        and ordering_party_query_thread.is_alive()
+    ):
+        ordering_party_query_pending = True
+    else:
+        ordering_party_query_pending = False
+        ordering_party_query_thread = threading.Thread(
+            target=_ordering_party_query_worker,
+            args=(reason,),
+            daemon=True,
+        )
+        ordering_party_query_thread.start()
+    _set_ordering_party_query_state(True, "正在查询下单方信息...")
     win.after(100, poll_ui_queue)
 
 
@@ -3800,6 +4214,7 @@ def poll_ui_queue():
     global add_customer_send_active
     global medical_device_catalog_refresh_active
     global customer_query_active
+    global ordering_party_query_active
     flush_log()
     while True:
         try:
@@ -3892,6 +4307,22 @@ def poll_ui_queue():
                     if records else "查询成功，未返回客商信息"
                 )
             _set_customer_query_state(False, status)
+        elif kind == "ordering_party_query_result":
+            records, error_text = payload
+            ordering_party_query_active = False
+            if error_text:
+                status = (
+                    "查询失败，已保留当前列表"
+                    f"：{error_text}"
+                )
+            else:
+                ordering_party_records[:] = records
+                _refresh_ordering_party_window()
+                status = (
+                    f"查询成功，共 {len(records)} 条下单方信息"
+                    if records else "查询成功，未返回下单方信息"
+                )
+            _set_ordering_party_query_state(False, status)
         elif kind == "product_send_result":
             token, success, text, medical_device = payload
             _replace_product_response(
@@ -3912,15 +4343,15 @@ def poll_ui_queue():
                     "新增医疗器械产品成功"
                 )
         elif kind == "add_customer_send_result":
-            token, success, text = payload
+            token, success, text, customer_type = payload
             _replace_add_customer_response(
                 token, text, "success" if success else "failure"
             )
             add_customer_send_active = False
-            if customer_add_button is not None:
+            if add_customer_origin_button is not None:
                 try:
-                    if customer_add_button.winfo_exists():
-                        customer_add_button.config(state=tk.NORMAL)
+                    if add_customer_origin_button.winfo_exists():
+                        add_customer_origin_button.config(state=tk.NORMAL)
                 except tk.TclError:
                     pass
             if add_customer_send_button is not None:
@@ -3933,7 +4364,10 @@ def poll_ui_queue():
                     pass
             refresh_export_state()
             if success:
-                _start_customer_query("新增客商成功")
+                if customer_type == "IP":
+                    _start_ordering_party_query("新增下单方成功")
+                else:
+                    _start_customer_query("新增客商成功")
         elif kind == "wms_send_result":
             token, success, text = payload
             _replace_wms_response(
@@ -3962,9 +4396,16 @@ def poll_ui_queue():
     ):
         _start_customer_query("处理等待中的查询请求")
 
+    if ordering_party_query_pending and (
+        ordering_party_query_thread is None
+        or not ordering_party_query_thread.is_alive()
+    ):
+        _start_ordering_party_query("处理等待中的查询请求")
+
     if (
         medical_device_catalog_refresh_pending
         or customer_query_pending
+        or ordering_party_query_pending
         or any(
         thread is not None and thread.is_alive()
         for thread in (
@@ -3976,6 +4417,7 @@ def poll_ui_queue():
             add_customer_thread,
             medical_device_catalog_thread,
             customer_query_thread,
+            ordering_party_query_thread,
         )
         )
     ):
@@ -4132,6 +4574,11 @@ tk.Button(
 ).pack(side=tk.LEFT, padx=(0, 15))
 tk.Button(
     op_frame, text="查询客商", command=open_customer_window,
+    padx=15, font=BUTTON_FONT,
+    disabledforeground=DISABLED_FOREGROUND,
+).pack(side=tk.LEFT, padx=(0, 15))
+tk.Button(
+    op_frame, text="查询下单方", command=open_ordering_party_window,
     padx=15, font=BUTTON_FONT,
     disabledforeground=DISABLED_FOREGROUND,
 ).pack(side=tk.LEFT, padx=(0, 15))
