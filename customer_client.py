@@ -88,6 +88,7 @@ def query_customer_records(timeout=10):
             "header": {
                 "warehouseId": WMS_WAREHOUSE_ID,
                 "customerId": WMS_CUSTOMER_ID,
+                "customerType": "CO",
             }
         }
     }
