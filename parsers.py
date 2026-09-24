@@ -15,6 +15,7 @@ class RecognitionResult:
     header_values: Mapping
     detail_lines: tuple
     split_groups: tuple = ()
+    split_exception_indexes: tuple = ()
 
 
 _ITEM_DETAIL_PATTERN = re.compile(
@@ -214,6 +215,7 @@ def _parse_invoice(commit_result, filename):
     print_log(f"{filename} INVOICE NO:{invoice_no} DELIVERY:{delivery} DATE:{doc_date} CARRIER:{carrier} HAWB:{hawb} 明细总行数:{len(material_list)}")
     detail_lines = []
     split_groups = []
+    split_exception_indexes = []
     for item in material_list:
         raw_qty_str = item.get("QTY", {}).get("value", "").strip()
         item_num = item.get("ITEM NUMBER", {}).get("value", "").strip()
@@ -242,6 +244,12 @@ def _parse_invoice(commit_result, filename):
                 "SALES ORDER NO": sales_order,
                 "CUSTOMER PO": customer_po,
             }))
+            return len(detail_lines) - 1
+
+        def append_split_exception(qty, lpn, serial):
+            split_exception_indexes.append(
+                append_detail(qty, lpn, serial)
+            )
 
         # 清洗LPN列表
         lpn_list = [lpn.strip() for lpn in raw_lpn_str.split(",") if lpn.strip()]
@@ -275,7 +283,7 @@ def _parse_invoice(commit_result, filename):
                 append_detail(raw_qty_str, single_lpn, "")
             else:
                 # LPN不满足拆分，原样一行
-                append_detail(raw_qty_str, raw_lpn_str, "")
+                append_split_exception(raw_qty_str, raw_lpn_str, "")
         # 情况2：Serial有值，原有多字段匹配逻辑
         else:
             # 场景1：LPN数量=QTY，Serial数量也等于QTY，一一对应拆分
@@ -322,7 +330,9 @@ def _parse_invoice(commit_result, filename):
                 )
             # 其他所有不匹配场景，保留原始一行，LPN/Serial逗号拼接不拆分
             else:
-                append_detail(raw_qty_str, raw_lpn_str, raw_serial_str)
+                append_split_exception(
+                    raw_qty_str, raw_lpn_str, raw_serial_str
+                )
     return RecognitionResult(
         header_values=_named_values({
             "INVOICE NO": invoice_no,
@@ -333,6 +343,7 @@ def _parse_invoice(commit_result, filename):
         }),
         detail_lines=tuple(detail_lines),
         split_groups=tuple(split_groups),
+        split_exception_indexes=tuple(split_exception_indexes),
     )
 
 

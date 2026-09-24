@@ -57,6 +57,7 @@ class DocumentInput:
     header_values: dict = field(default_factory=dict)
     detail_lines: tuple = ()
     split_groups: tuple = ()
+    split_exception_indexes: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class DetailLine:
     line_id: str
     values: tuple
     medical_device: bool = False
+    split_exception: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ class DocumentSnapshot:
     lines: tuple
     split_groups: tuple
     medical_device_present: bool
+    split_exception_present: bool
     consignee_backfill_allowed: bool
     can_undo: bool
     template: str = ""
@@ -121,6 +124,7 @@ class CommandResult:
 class _Line:
     line_id: str
     values: tuple
+    split_exception: bool = False
 
 
 @dataclass
@@ -261,6 +265,13 @@ class PreviewTable:
                 self.detail_fields,
                 "明细行字段",
             )
+        for index in document.split_exception_indexes:
+            if (
+                not isinstance(index, int)
+                or index < 0
+                or index >= len(document.detail_lines)
+            ):
+                raise ValueError(f"非法拆分异常明细索引: {index}")
         for group in document.split_groups:
             if not isinstance(group, Mapping):
                 raise ValueError("拆分分组必须是字典")
@@ -290,6 +301,9 @@ class PreviewTable:
             manual=bool(document.metadata.manual),
         )
         header_values = self._merge_header_values(document.header_values)
+        split_exception_indexes = frozenset(
+            document.split_exception_indexes
+        )
         lines = []
         for index, detail_line in enumerate(document.detail_lines, start=1):
             lines.append(_Line(
@@ -298,6 +312,7 @@ class PreviewTable:
                     _text(detail_line.get(field, ""))
                     for field in self.detail_fields
                 ),
+                split_exception=index - 1 in split_exception_indexes,
             ))
         split_groups = self._build_split_groups(document.split_groups, lines)
         return _Document(metadata, header_values, lines, split_groups)
@@ -451,6 +466,7 @@ class PreviewTable:
                 line_id=line.line_id,
                 values=tuple(line.values),
                 medical_device=line.line_id in medical_line_ids,
+                split_exception=line.split_exception,
             )
             for line in document.lines
         )
@@ -468,6 +484,9 @@ class PreviewTable:
             lines=lines,
             split_groups=groups,
             medical_device_present=medical_present,
+            split_exception_present=any(
+                line.split_exception for line in lines
+            ),
             consignee_backfill_allowed=self._consignee_backfill_allowed(
                 document, medical_present
             ),
@@ -496,7 +515,11 @@ class PreviewTable:
             metadata=document.metadata,
             header_values=dict(document.header_values),
             lines=tuple(
-                _Line(line.line_id, tuple(line.values))
+                _Line(
+                    line.line_id,
+                    tuple(line.values),
+                    line.split_exception,
+                )
                 for line in document.lines
             ),
             split_groups=tuple(
@@ -517,7 +540,11 @@ class PreviewTable:
         document.metadata = entry.metadata
         document.header_values = dict(entry.header_values)
         document.lines = [
-            _Line(line.line_id, tuple(line.values))
+            _Line(
+                line.line_id,
+                tuple(line.values),
+                line.split_exception,
+            )
             for line in entry.lines
         ]
         document.split_groups = [

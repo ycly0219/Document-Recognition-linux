@@ -159,6 +159,8 @@ ordering_party_copy_status_after_id = None
 
 MEDICAL_DEVICE_WARNING_COLOR = "#B42318"
 MEDICAL_DEVICE_ROW_TAG = "medical_device_row"
+SPLIT_EXCEPTION_WARNING = "包含异常明细，请注意"
+SPLIT_EXCEPTION_ROW_TAG = "split_exception_row"
 COPY_STATUS_DURATION_MS = 2000
 MEDICAL_DEVICE_COLUMNS = (
     "产品编码",
@@ -314,12 +316,14 @@ class EditableTreeview(ttk.Treeview):
 
     @staticmethod
     def _row_tags(line, export_index):
-        tags = (
+        tags = [
             "zebra_even" if export_index % 2 == 0 else "zebra_odd"
-        )
+        ]
         if line.medical_device:
-            tags = (tags, MEDICAL_DEVICE_ROW_TAG)
-        return tags
+            tags.append(MEDICAL_DEVICE_ROW_TAG)
+        if line.split_exception:
+            tags.append(SPLIT_EXCEPTION_ROW_TAG)
+        return tuple(tags)
 
     def select_line_ids(self, line_ids):
         """选中指定实际明细行，缺失的 ID 自动忽略。"""
@@ -1143,6 +1147,10 @@ def _document_inputs(raw_file_results):
                 recognition_result.split_groups
                 if recognition_result is not None else ()
             ),
+            split_exception_indexes=(
+                recognition_result.split_exception_indexes
+                if recognition_result is not None else ()
+            ),
         ))
     return tuple(inputs)
 
@@ -1167,7 +1175,7 @@ def _new_preview_file_info(snapshot):
         "tab": None,
         "tree": None,
         "status_label": None,
-        "medical_warning_label": None,
+        "detail_warning_label": None,
         "consignee_label": None,
         "consignee_entry": None,
         "consignee_button": None,
@@ -1307,8 +1315,8 @@ def _handle_preview_tree_command(tree, command, payload):
 
 
 def _refresh_file_medical_device_display(file_result, snapshot, select_text):
-    """按权威快照刷新医疗器械提示和客商编码选择状态。"""
-    warning_label = file_result.get("medical_warning_label")
+    """按权威快照刷新明细提示和客商编码选择状态。"""
+    warning_label = file_result.get("detail_warning_label")
     if warning_label is None:
         return
     try:
@@ -1318,12 +1326,12 @@ def _refresh_file_medical_device_display(file_result, snapshot, select_text):
         return
 
     has_medical_device = snapshot.medical_device_present
+    warning_texts = []
+    if snapshot.split_exception_present:
+        warning_texts.append(SPLIT_EXCEPTION_WARNING)
     if has_medical_device:
-        warning_label.config(text=MEDICAL_DEVICE_WARNING)
-        if not warning_label.winfo_manager():
-            warning_label.place(relx=0.5, rely=0.5, anchor="center")
-    else:
-        warning_label.place_forget()
+        warning_texts.append(MEDICAL_DEVICE_WARNING)
+    warning_label.config(text="；".join(warning_texts))
 
     consignee_entry = file_result.get("consignee_entry")
     consignee_label = file_result.get("consignee_label")
@@ -1429,6 +1437,18 @@ def _set_customer_backfill_target(document_id):
         snapshot.metadata.document_id if snapshot is not None else ""
     )
     _refresh_customer_backfill_state()
+
+
+def _bind_wrapped_label_width(label, frame):
+    """让状态标签按所在行的可用宽度换行。"""
+    def resize(event):
+        try:
+            if label.winfo_exists() and event.width > 0:
+                label.config(wraplength=event.width)
+        except tk.TclError:
+            pass
+
+    frame.bind("<Configure>", resize, add="+")
 
 
 def _render_medical_device_window_status(text, error=False):
@@ -1647,22 +1667,27 @@ def open_medical_device_window():
         text=medical_device_catalog_refresh_status,
         font=BODY_FONT,
         anchor="w",
+        justify=tk.LEFT,
         fg="#475569",
     )
-    medical_device_status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    medical_device_status_label.pack(side=tk.TOP, fill=tk.X)
+    _bind_wrapped_label_width(medical_device_status_label, footer)
+
+    button_row = tk.Frame(footer)
+    button_row.pack(side=tk.TOP, fill=tk.X, pady=(6, 0))
     tk.Button(
-        footer, text="关闭", command=close_medical_device_window,
+        button_row, text="关闭", command=close_medical_device_window,
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
     ).pack(side=tk.RIGHT)
     tk.Button(
-        footer, text="新增产品", command=open_add_product_window,
+        button_row, text="新增产品", command=open_add_product_window,
         padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
         activebackground="#155E75", activeforeground="#111827",
         disabledforeground=DISABLED_FOREGROUND,
     ).pack(side=tk.RIGHT, padx=(0, 15))
     medical_device_refresh_button = tk.Button(
-        footer, text="重新查询",
+        button_row, text="重新查询",
         command=lambda: _start_medical_device_catalog_refresh("手动查询"),
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
@@ -2366,23 +2391,28 @@ def open_customer_window(target_document_id=None):
         text=customer_query_status,
         font=BODY_FONT,
         anchor="w",
+        justify=tk.LEFT,
         fg="#475569",
     )
-    customer_status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    customer_status_label.pack(side=tk.TOP, fill=tk.X)
+    _bind_wrapped_label_width(customer_status_label, footer)
+
+    button_row = tk.Frame(footer)
+    button_row.pack(side=tk.TOP, fill=tk.X, pady=(6, 0))
     tk.Button(
-        footer, text="关闭", command=close_customer_window,
+        button_row, text="关闭", command=close_customer_window,
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
     ).pack(side=tk.RIGHT)
     customer_refresh_button = tk.Button(
-        footer, text="重新查询",
+        button_row, text="重新查询",
         command=lambda: _start_customer_query("手动重新查询"),
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
     )
     customer_refresh_button.pack(side=tk.RIGHT, padx=(0, 15))
     customer_use_button = tk.Button(
-        footer, text="使用选中客商", command=_use_selected_customer,
+        button_row, text="使用选中客商", command=_use_selected_customer,
         padx=15, bg="#0E7490", fg="#111827", font=BUTTON_FONT,
         activebackground="#155E75", activeforeground="#111827",
         disabledforeground=DISABLED_FOREGROUND,
@@ -2390,7 +2420,7 @@ def open_customer_window(target_document_id=None):
     )
     customer_use_button.pack(side=tk.RIGHT, padx=(0, 15))
     customer_add_button = tk.Button(
-        footer, text="新增客商",
+        button_row, text="新增客商",
         command=lambda: open_add_customer_window(customer_window),
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
@@ -2731,18 +2761,21 @@ def open_ordering_party_window():
         text=ordering_party_query_status,
         font=BODY_FONT,
         anchor="w",
+        justify=tk.LEFT,
         fg="#475569",
     )
-    ordering_party_status_label.pack(
-        side=tk.LEFT, fill=tk.X, expand=True
-    )
+    ordering_party_status_label.pack(side=tk.TOP, fill=tk.X)
+    _bind_wrapped_label_width(ordering_party_status_label, footer)
+
+    button_row = tk.Frame(footer)
+    button_row.pack(side=tk.TOP, fill=tk.X, pady=(6, 0))
     tk.Button(
-        footer, text="关闭", command=close_ordering_party_window,
+        button_row, text="关闭", command=close_ordering_party_window,
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
     ).pack(side=tk.RIGHT)
     ordering_party_add_button = tk.Button(
-        footer, text="新增下单方",
+        button_row, text="新增下单方",
         command=lambda: open_add_customer_window(
             parent=ordering_party_window,
             subject="下单方",
@@ -2755,7 +2788,7 @@ def open_ordering_party_window():
     )
     ordering_party_add_button.pack(side=tk.RIGHT, padx=(0, 15))
     ordering_party_refresh_button = tk.Button(
-        footer, text="重新查询",
+        button_row, text="重新查询",
         command=lambda: _start_ordering_party_query("手动重新查询"),
         padx=15, font=BUTTON_FONT,
         disabledforeground=DISABLED_FOREGROUND,
@@ -2902,6 +2935,10 @@ def _build_scrolled_preview_tree(
     )
     tree.tag_configure(
         MEDICAL_DEVICE_ROW_TAG,
+        foreground=MEDICAL_DEVICE_WARNING_COLOR,
+    )
+    tree.tag_configure(
+        SPLIT_EXCEPTION_ROW_TAG,
         foreground=MEDICAL_DEVICE_WARNING_COLOR,
     )
 
@@ -3096,15 +3133,16 @@ def _build_file_tab(file_result, snapshot, select_text, add_tab=True):
     detail_title_row.pack(fill=tk.X, padx=8, pady=(0, 2))
     tk.Label(detail_title_row, text="明细", anchor="w",
              font=SECTION_FONT).pack(side=tk.LEFT)
-    medical_warning_label = tk.Label(
+    detail_warning_label = tk.Label(
         detail_title_row,
-        text=MEDICAL_DEVICE_WARNING,
+        text="",
         anchor="center",
         justify="center",
         font=SECTION_FONT,
         fg=MEDICAL_DEVICE_WARNING_COLOR,
     )
-    file_result["medical_warning_label"] = medical_warning_label
+    detail_warning_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    file_result["detail_warning_label"] = detail_warning_label
 
     detail_panel, detail_tree = _build_scrolled_preview_tree(
         tab,
@@ -3511,6 +3549,9 @@ def _apply_continue_success(
             header_values=recognition_result.header_values,
             detail_lines=recognition_result.detail_lines,
             split_groups=recognition_result.split_groups,
+            split_exception_indexes=(
+                recognition_result.split_exception_indexes
+            ),
         ),
     )
     info = _preview_file_info(document_id)
